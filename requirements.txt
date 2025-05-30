@@ -1,13 +1,7 @@
 ultralytics>=8.0.196
-torch>=1.8.0
-torchvision>=0.9.0
-opencv-python>=4.5.0
-numpy>=1.21.0
-pyserial>=3.5
-
-# LLM Integration Dependencies
-requests>=2.25.0
-transformers>=4.20.0
-accelerate>=0.20.0
-gpt4all>=2.0.0
-sentencepiece>=0.1.99
+opencv-python
+torch
+torchvision
+numpy
+pyserial
+matplotlib

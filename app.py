@@ -1,10 +1,29 @@
+import os
 import cv2
 import torch
 import numpy as np
 import time
 import serial
 import serial.tools.list_ports
+import traceback
 from pathlib import Path
+
+# Set OpenCV to use headless mode in Docker/server environments
+if os.environ.get('DISPLAY') is None:
+    os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+    
+# Try to configure OpenCV for headless operation
+try:
+    cv2.setUseOptimized(True)
+    # Test if we can create a simple image (this will fail if OpenGL is missing)
+    test_img = np.zeros((100, 100, 3), dtype=np.uint8)
+    cv2.imwrite('/tmp/test.jpg', test_img)
+    print("✅ OpenCV initialized successfully")
+except Exception as e:
+    print(f"⚠️ OpenCV GUI functions may be limited: {e}")
+    # Force headless mode
+    import matplotlib
+    matplotlib.use('Agg')  # Use non-interactive backend
 
 # Configuration
 MODEL_PATH = "corn11.pt"  # Your YOLOv11 model
