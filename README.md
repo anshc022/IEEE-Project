@@ -138,9 +138,16 @@ ls /dev/tty*
 
 #### 6. Python Dependencies Missing
 **Error:** Import errors for ultralytics, opencv, etc.
+**Solution for Jetson Nano:**
+```bash
+chmod +x ultimate_jetson_setup.sh && ./ultimate_jetson_setup.sh
+```
+
+#### 7. PyTorch Missing on Jetson Nano
+**Error:** `ModuleNotFoundError: No module named 'torch'`
 **Solution:**
 ```bash
-pip3 install --user ultralytics opencv-python torch pyserial matplotlib numpy
+chmod +x fix_pytorch_jetson.sh && ./fix_pytorch_jetson.sh
 ```
 
 ### Camera not working?
@@ -183,38 +190,58 @@ python3 app.py
 chmod +x super_simple_run.sh && ./super_simple_run.sh
 ```
 - ✅ Fixes Docker permissions automatically
+- ✅ Installs PyTorch for Jetson Nano properly
 - ✅ Tries Docker first, falls back to Python if needed
 - ✅ Works 100% of the time
 
-### Option 2: Standard Docker Setup
+### Option 2: Ultimate Jetson Setup (If Option 1 Fails)
+**Complete dependency installation for Jetson Nano:**
+```bash
+chmod +x ultimate_jetson_setup.sh && ./ultimate_jetson_setup.sh
+```
+- ✅ Detects Jetson Nano automatically
+- ✅ Installs proper PyTorch wheel for Jetson
+- ✅ Installs all system dependencies
+- ✅ Tests everything before running
+
+### Option 3: Quick PyTorch Fix Only
+**If only PyTorch is missing:**
+```bash
+chmod +x fix_pytorch_jetson.sh && ./fix_pytorch_jetson.sh
+```
+- ✅ Specifically fixes PyTorch on Jetson Nano
+- ✅ Downloads correct wheel file
+- ✅ Tests installation
+
+### Option 4: Standard Docker Setup
 ```bash
 chmod +x run.sh && ./run.sh
 ```
 - ✅ Full Docker setup with version handling
 - ✅ Best for clean systems
 
-### Option 3: Skip Docker Completely
+### Option 5: Skip Docker Completely
 ```bash
 chmod +x run_python_direct.sh && ./run_python_direct.sh
 ```
 - ✅ Runs directly with Python (no Docker)
 - ✅ Fastest startup, fewer dependencies
 
-### Option 4: Quick Permission Fix
+### Option 6: Quick Permission Fix
 ```bash
 chmod +x fix_docker_permissions.sh && ./fix_docker_permissions.sh
 ```
 - ✅ Fixes Docker permissions and builds
 - ✅ Fallback to Python if Docker fails
 
-### Option 5: Simple Version Fix
+### Option 7: Simple Version Fix
 ```bash
 chmod +x quick_fix.sh && ./quick_fix.sh
 ```
 - ✅ Updates docker-compose version
 - ✅ Good for version conflicts
 
-### Option 6: Test Everything First
+### Option 8: Test Everything First
 ```bash
 python3 test_setup.py
 ```
@@ -238,6 +265,8 @@ run.bat
 | Script | Purpose | When to Use |
 |--------|---------|-------------|
 | `super_simple_run.sh` | ⭐ Auto-fix everything | **Always start here** |
+| `ultimate_jetson_setup.sh` | Complete Jetson setup | Dependency issues |
+| `fix_pytorch_jetson.sh` | Fix PyTorch only | PyTorch missing |
 | `run.sh` | Standard Docker setup | Clean Jetson Nano |
 | `run_python_direct.sh` | Skip Docker entirely | Docker issues |
 | `fix_docker_permissions.sh` | Fix Docker permissions | Permission errors |
@@ -263,6 +292,12 @@ chmod +x super_simple_run.sh && ./super_simple_run.sh
 ```bash
 # Test everything first:
 python3 test_setup.py
+
+# Ultimate setup for Jetson Nano:
+chmod +x ultimate_jetson_setup.sh && ./ultimate_jetson_setup.sh
+
+# Fix PyTorch only:
+chmod +x fix_pytorch_jetson.sh && ./fix_pytorch_jetson.sh
 
 # Skip Docker entirely:
 chmod +x run_python_direct.sh && ./run_python_direct.sh
