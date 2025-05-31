@@ -1,0 +1,72 @@
+# Minimal Dockerfile for YOLOv11 Seed Detection on Jetson Nano
+# Uses minimal dependencies and handles repository issues
+
+FROM nvcr.io/nvidia/l4t-pytorch:r32.7.1-pth1.10-py3
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV QT_X11_NO_MITSHM=1
+ENV DISPLAY=:0
+
+# Set working directory
+WORKDIR /app
+
+# First, handle problematic repositories and install essentials
+RUN rm -f /etc/apt/sources.list.d/kitware* && \
+    rm -f /etc/apt/sources.list.d/*kitware* && \
+    sed -i 's/^deb.*kitware.*/#&/' /etc/apt/sources.list || true && \
+    apt-get update || apt-get update && \
+    apt-get install -y --no-install-recommends \
+        python3-pip \
+        python3-dev \
+        wget \
+        ca-certificates \
+        && apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
+
+# Try to install optional packages (may fail on some systems)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        python3-opencv \
+        libgstreamer1.0-0 \
+        gstreamer1.0-plugins-base \
+        gstreamer1.0-plugins-good \
+        gstreamer1.0-tools \
+        libgl1-mesa-glx \
+        libglib2.0-0 \
+        v4l-utils \
+        || echo "Some optional packages failed to install, continuing with essentials..." && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip
+RUN python3 -m pip install --upgrade pip
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+
+# Install Python dependencies with error handling
+RUN pip3 install --no-cache-dir -r requirements.txt || \
+    (echo "Some packages failed, installing essentials only..." && \
+     pip3 install --no-cache-dir ultralytics opencv-python-headless PyQt5 pyserial numpy) || \
+    (echo "Fallback to absolute minimum packages..." && \
+     pip3 install --no-cache-dir ultralytics opencv-python-headless)
+
+# Copy application files
+COPY . .
+
+# Create necessary directories
+RUN mkdir -p /app/logs /app/data
+
+# Set permissions (with error handling)
+RUN chmod +x *.py 2>/dev/null || echo "No .py files to make executable"
+RUN chmod +x *.sh 2>/dev/null || echo "No .sh files to make executable"
+
+# Create a non-root user for security
+RUN useradd -m -u 1000 jetson && \
+    chown -R jetson:jetson /app
+USER jetson
+
+# Default command
+CMD ["python3", "app.py"]

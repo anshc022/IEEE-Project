@@ -1,0 +1,51 @@
+version: '3.3'
+
+services:
+  yolo-seed-detection:
+    build:
+      context: .
+      dockerfile: Dockerfile.jetson-fixed
+    container_name: yolo-seed-detection-jetson
+    restart: unless-stopped
+    
+    # GPU support using deploy syntax (Docker Compose v3.3+)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    
+    # Device access for cameras
+    devices:
+      - "/dev/video0:/dev/video0"
+      - "/dev/video1:/dev/video1"
+      - "/dev/video2:/dev/video2"
+    
+    # Privileged mode for camera access
+    privileged: true
+    
+    # Volume mounts
+    volumes:
+      - "./data:/app/data"
+      - "./logs:/app/logs"
+      - "./models:/app/models"
+      - "/tmp/.X11-unix:/tmp/.X11-unix:rw"
+    
+    # Environment variables
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - QT_X11_NO_MITSHM=1
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    
+    # Network mode for display forwarding
+    network_mode: host
+    
+    # Working directory
+    working_dir: /app
+    
+    # Command override (optional)
+    # command: ["python3", "test_camera.py"]
