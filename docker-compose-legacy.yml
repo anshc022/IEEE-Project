@@ -1,5 +1,7 @@
 # Docker Compose v1 format for very old Docker Compose versions (1.17.x)
-yolo-seed-detection:  build: .
+yolo-seed-detection:
+  build: .
+  dockerfile: Dockerfile.jetson-fixed
   container_name: yolo-seed-detector
   restart: unless-stopped
   privileged: true
@@ -9,26 +11,18 @@ yolo-seed-detection:  build: .
     - DISPLAY=:0
     - QT_X11_NO_MITSHM=1
     - PYTHONUNBUFFERED=1
-  # Mount volumes
   volumes:
-    # X11 socket for GUI applications
     - /tmp/.X11-unix:/tmp/.X11-unix:rw
-    # Device access for cameras
     - /dev:/dev
-    # Logs and data persistence
     - ./logs:/app/logs
     - ./data:/app/data
-    # Optional: Mount additional camera calibration files
     - ./calibration:/app/calibration:ro
-  # Device access for cameras and serial ports
   devices:
     - /dev/video0:/dev/video0
     - /dev/video1:/dev/video1
     - /dev/ttyUSB0:/dev/ttyUSB0
     - /dev/ttyACM0:/dev/ttyACM0
-  # Network mode
   net: host
-  # Logging configuration
   log_driver: "json-file"
   log_opt:
     max-size: "100m"
