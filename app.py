@@ -8,8 +8,12 @@ import serial.tools.list_ports
 import traceback
 from pathlib import Path
 
-# Set OpenCV to use headless mode in Docker/server environments
-if os.environ.get('DISPLAY') is None:
+# Set OpenCV to use proper display mode
+# Force OpenCV to use X11 backend on Linux systems with display
+if os.environ.get('DISPLAY'):
+    os.environ['QT_QPA_PLATFORM'] = 'xcb'
+else:
+    # Only use offscreen if no display is available
     os.environ['QT_QPA_PLATFORM'] = 'offscreen'
     
 # Try to configure OpenCV for headless operation
@@ -384,22 +388,46 @@ def initialize_camera():
             print("⚠️ All CSI camera configurations failed")
     except Exception as e:
         print(f"⚠️ CSI camera initialization failed: {e}")
-    
-    # Fallback to USB camera
+      # Fallback to USB camera
     print("Falling back to USB camera...")
     for camera_index in [0, 1, 2, 3]:
         try:
             cap = cv2.VideoCapture(camera_index)
             if cap.isOpened():
+                # Set reasonable resolution first
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                 cap.set(cv2.CAP_PROP_FPS, 15)
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                  # Try to set additional properties for better compatibility
+                try:
+                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc('M', 'J', 'P', 'G'))
+                except:
+                    pass  # Skip if not supported
                 
                 # Test reading a frame
                 ret, test_frame = cap.read()
                 if ret and test_frame is not None:
-                    print(f"✅ USB camera {camera_index} working - Frame size: {test_frame.shape}")
+                    # Check for green screen in USB camera too
+                    mean_channels = np.mean(test_frame, axis=(0, 1))
+                    green_dominance = mean_channels[1] / (mean_channels[0] + mean_channels[2] + 1e-6)
+                    
+                    print(f"✅ USB camera {camera_index} - Frame: {test_frame.shape}, Green dominance: {green_dominance:.2f}")
+                    
+                    # If green screen is detected, try to fix it
+                    if green_dominance > 2.0:
+                        print(f"⚠️ Green screen detected in USB camera {camera_index}, trying to fix...")
+                        # Try different capture settings
+                        cap.set(cv2.CAP_PROP_CONVERT_RGB, 1)
+                        cap.set(cv2.CAP_PROP_FORMAT, -1)  # Auto format
+                        
+                        # Test again
+                        ret, test_frame = cap.read()
+                        if ret and test_frame is not None:
+                            mean_channels = np.mean(test_frame, axis=(0, 1))
+                            green_dominance = mean_channels[1] / (mean_channels[0] + mean_channels[2] + 1e-6)
+                            print(f"After fix - Green dominance: {green_dominance:.2f}")
+                    
                     return cap
                 else:
                     cap.release()
@@ -512,8 +540,7 @@ try:
             # Some CSI cameras might output in different color formats
             if frame.dtype != np.uint8:
                 frame = frame.astype(np.uint8)
-            
-            # Ensure frame is in BGR format (OpenCV default)
+              # Ensure frame is in BGR format (OpenCV default)
             # Some cameras might need color space conversion
             if frame_count == 0:
                 # Test if the image looks like it might be in wrong color space
@@ -525,9 +552,17 @@ try:
                     print("⚠️ Detected potential color space issue - applying correction")
                     # Try different color space conversions
                     try:
-                        # This might help if camera is outputting YUV or similar
-                        frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR)
-                        print("Applied YUV to BGR conversion")
+                        # Check if it's an all-green frame (common CSI camera issue)
+                        if mean_values[0] == 0 and mean_values[2] == 0 and mean_values[1] > 0:
+                            print("🔧 Detected all-green frame - attempting to fix...")
+                            # Create a placeholder grayscale frame using the green channel
+                            gray_frame = frame[:,:,1]  # Use green channel as grayscale
+                            frame = cv2.cvtColor(gray_frame, cv2.COLOR_GRAY2BGR)
+                            print("✅ Converted green-only frame to grayscale")
+                        else:
+                            # Try YUV conversion
+                            frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR)
+                            print("Applied YUV to BGR conversion")
                     except:
                         try:
                             # Alternative: swap channels if BGR is actually RGB
