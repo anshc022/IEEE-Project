@@ -24,10 +24,47 @@ def run_command(cmd, ignore_errors=False):
             print(f"❌ Error running command: {e}")
         return False
 
+def check_torch_installed():
+    """Check if PyTorch is properly installed"""
+    try:
+        import torch
+        return True
+    except ImportError:
+        return False
+
 def install_python_packages():
     """Install required Python packages"""
     print("📦 Installing Python packages...")
     
+    # Check if we're on Jetson Nano
+    is_jetson = os.path.exists('/etc/nv_tegra_release') or 'tegra' in platform.platform().lower()
+    
+    if is_jetson:
+        print("🤖 Detected Jetson Nano - installing optimized PyTorch...")
+        # Install system dependencies first
+        print("📦 Installing system dependencies...")
+        run_command("sudo apt-get update", ignore_errors=True)
+        run_command("sudo apt-get install -y python3-pip", ignore_errors=True)
+        
+        # Install PyTorch for Jetson Nano (ARM64 wheel)
+        print("🔥 Installing PyTorch for Jetson Nano...")
+        torch_url = "https://nvidia.box.com/shared/static/fjtbno0vpo676a25cgvuqc1wty0fkkg6.whl"
+        run_command(f"pip3 install {torch_url}", ignore_errors=True)
+        
+        # Alternative: Try the PyTorch index for ARM
+        if not check_torch_installed():
+            print("🔄 Trying alternative PyTorch installation...")
+            run_command("pip3 install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cpu", ignore_errors=True)
+        
+        # If still not working, try pip install without specific version
+        if not check_torch_installed():
+            print("🔄 Trying basic PyTorch installation...")
+            run_command("pip3 install torch", ignore_errors=True)
+    else:
+        print("💻 Installing standard PyTorch...")
+        run_command("pip3 install torch torchvision torchaudio", ignore_errors=True)
+    
+    # Install other packages
     packages = [
         "ultralytics>=8.0.196",
         "opencv-python",
@@ -36,20 +73,6 @@ def install_python_packages():
         "pyserial",
         "Pillow"
     ]
-    
-    # Check if we're on Jetson Nano and install PyTorch properly
-    is_jetson = os.path.exists('/etc/nv_tegra_release') or 'tegra' in platform.platform().lower()
-    
-    if is_jetson:
-        print("🤖 Detected Jetson Nano - installing optimized PyTorch...")
-        # Install PyTorch for Jetson
-        torch_cmd = "pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118"
-        run_command(torch_cmd, ignore_errors=True)
-    else:
-        print("💻 Installing standard PyTorch...")
-        packages.append("torch")
-        packages.append("torchvision")
-        packages.append("torchaudio")
     
     for package in packages:
         print(f"Installing {package}...")
@@ -115,23 +138,28 @@ def main():
     install_python_packages()
     
     # Test CUDA
-    cuda_available = test_cuda()
+    test_cuda()
     
     # Check hardware
     check_hardware()
     
     print("\n" + "=" * 50)
     print("🚀 Starting YOLO Seed Detection...")
-    
-    # Run the main application
+      # Run the main application
     try:
-        import app
-        print("✅ Application started successfully!")
+        if check_torch_installed():
+            print("🔥 Loading YOLO detection app...")
+            import app  # This will run the app.py main code
+        else:
+            print("❌ PyTorch not properly installed")
+            print("   Please check the installation errors above")
     except ImportError as e:
         print(f"❌ Failed to import app.py: {e}")
         print("   Make sure app.py is in the same directory")
     except Exception as e:
         print(f"❌ Error running application: {e}")
+    
+    print("✅ Done!")
 
 if __name__ == "__main__":
     main()

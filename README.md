@@ -4,9 +4,15 @@
 
 ## 🚀 Quick Start
 
-### For Jetson Nano (Linux)
+### For Jetson Nano (Linux) - AUTOMATIC DETECTION
 ```bash
 chmod +x super_simple_run.sh && ./super_simple_run.sh
+```
+*The script will automatically detect Jetson Nano and use optimized PyTorch installation*
+
+### Manual Jetson Nano Setup (if auto-detection fails)
+```bash
+python3 jetson_setup.py
 ```
 
 ### For Windows (Testing)
@@ -53,8 +59,9 @@ python3 run.py
 🌱 YOLO Seed Detection
 ├── app.py                 # Main detection script (CUDA-optimized)
 ├── corn11.pt              # Your YOLO model weights  
-├── run.py                 # Setup script (installs everything)
-├── super_simple_run.sh    # Linux one-command run
+├── run.py                 # Setup script (standard systems)
+├── jetson_setup.py        # Jetson Nano specific setup
+├── super_simple_run.sh    # Linux one-command run (auto-detects Jetson)
 ├── run.bat                # Windows one-command run
 ├── requirements.txt       # Python dependencies
 ├── test_servo.py          # ESP32 servo test
@@ -62,6 +69,15 @@ python3 run.py
 ```
 
 ## Troubleshooting
+
+**PyTorch installation failed on Jetson Nano?**
+```bash
+# Try the specialized Jetson setup
+python3 jetson_setup.py
+
+# Or manually install PyTorch
+pip3 install torch==1.13.0+cpu torchvision==0.14.0+cpu -f https://download.pytorch.org/whl/torch_stable.html
+```
 
 **Camera not working?**
 ```bash

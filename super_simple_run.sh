@@ -12,7 +12,13 @@ fi
 
 echo "🚀 Installing dependencies and running..."
 
-# Install packages and run
-python3 run.py
+# Check if we're on Jetson Nano
+if [ -f /etc/nv_tegra_release ] || grep -q "tegra" /proc/version 2>/dev/null; then
+    echo "🤖 Jetson Nano detected - using specialized setup"
+    python3 jetson_setup.py
+else
+    echo "💻 Regular system detected - using standard setup"
+    python3 run.py
+fi
 
 echo "✅ Done!"
