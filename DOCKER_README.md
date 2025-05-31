@@ -30,6 +30,9 @@ docker-compose up --build
 
 # Or run in background
 docker-compose up -d --build
+
+# If you get version errors with docker-compose.yml, use the legacy version:
+docker-compose -f docker-compose-legacy.yml up --build
 ```
 
 ### 3. Monitor and Control
@@ -84,6 +87,26 @@ ENV CUDA_CACHE_MAXSIZE=1073741824  # 1GB cache limit
 ```
 
 ## Troubleshooting
+
+### Docker Compose Version Issues
+
+If you see "Version in docker-compose.yml is unsupported" error:
+
+1. **Check your Docker Compose version:**
+   ```bash
+   docker-compose --version
+   ```
+
+2. **For older versions (< 1.12), use the legacy file:**
+   ```bash
+   docker-compose -f docker-compose-legacy.yml up --build
+   ```
+
+3. **Update Docker Compose (recommended):**
+   ```bash
+   sudo curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+   sudo chmod +x /usr/local/bin/docker-compose
+   ```
 
 ### Camera Issues
 

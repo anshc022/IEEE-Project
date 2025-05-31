@@ -120,9 +120,26 @@ fi
 print_status "Setup completed successfully!"
 print_status "You may need to log out and back in for group changes to take effect."
 print_status ""
+
+# Check Docker Compose version and provide appropriate instructions
+COMPOSE_VERSION=$(docker-compose --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
+print_status "Detected Docker Compose version: $COMPOSE_VERSION"
+
+if [ -n "$COMPOSE_VERSION" ] && [ $(echo "$COMPOSE_VERSION" | cut -d. -f1) -lt 2 ]; then
+    if [ $(echo "$COMPOSE_VERSION" | cut -d. -f2) -lt 12 ]; then
+        print_warning "Your Docker Compose version is quite old ($COMPOSE_VERSION)"
+        print_warning "If you encounter version errors, use the legacy file:"
+        print_status "docker-compose -f docker-compose-legacy.yml up --build"
+        print_status ""
+    fi
+fi
+
 print_status "To build and run the application:"
 print_status "1. cd to your project directory"
 print_status "2. Run: docker-compose up --build"
+print_status ""
+print_status "If you get version errors, try:"
+print_status "docker-compose -f docker-compose-legacy.yml up --build"
 print_status ""
 print_status "To run in background: docker-compose up -d --build"
 print_status "To view logs: docker-compose logs -f"
