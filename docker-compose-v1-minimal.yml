@@ -1,7 +1,8 @@
 # Docker Compose v1 format for Docker Compose 1.17.x on Jetson Nano
 # Ultra-minimal configuration to avoid repository issues
 
-yolo-seed-detection:  build: 
+yolo-seed-detection:
+  build:
     context: .
     dockerfile: Dockerfile.ultra-minimal
   container_name: yolo-seed-detector-minimal
@@ -12,17 +13,14 @@ yolo-seed-detection:  build:
     - QT_X11_NO_MITSHM=1
     - PYTHONUNBUFFERED=1
     - NVIDIA_VISIBLE_DEVICES=all
-  
   volumes:
     - /tmp/.X11-unix:/tmp/.X11-unix:rw
     - /dev:/dev
     - ./logs:/app/logs
     - ./data:/app/data
     - ./models:/app/models
-  
   devices:
     - /dev/video0:/dev/video0
     - /dev/video1:/dev/video1
     - /dev/video2:/dev/video2
-  
   net: host

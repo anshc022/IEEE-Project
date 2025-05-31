@@ -1,5 +1,6 @@
 # Docker Compose v1 format for very old Docker Compose versions (1.17.x)
-yolo-seed-detection:  build: 
+yolo-seed-detection:
+  build:
     context: .
     dockerfile: Dockerfile.jetson-fixed
   container_name: yolo-seed-detector
@@ -22,17 +23,14 @@ yolo-seed-detection:  build:
     - ./data:/app/data
     # Optional: Mount additional camera calibration files
     - ./calibration:/app/calibration:ro
-  
   # Device access for cameras and serial ports
   devices:
     - /dev/video0:/dev/video0
     - /dev/video1:/dev/video1
     - /dev/ttyUSB0:/dev/ttyUSB0
     - /dev/ttyACM0:/dev/ttyACM0
-  
   # Network mode
   net: host
-  
   # Logging configuration
   log_driver: "json-file"
   log_opt:
