@@ -7,9 +7,8 @@ yolo-seed-detection:
     dockerfile: Dockerfile.ultra-minimal
   container_name: yolo-seed-detector-minimal
   restart: unless-stopped
-  privileged: true
-  environment:
-    - DISPLAY=${DISPLAY:-:0}
+  privileged: true  environment:
+    - DISPLAY=:0
     - QT_X11_NO_MITSHM=1
     - PYTHONUNBUFFERED=1
     - NVIDIA_VISIBLE_DEVICES=all
