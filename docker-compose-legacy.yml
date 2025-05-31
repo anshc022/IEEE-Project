@@ -1,53 +1,41 @@
-version: '2.4'
-
-services:
-  yolo-seed-detection:
-    build: 
-      context: .
-      dockerfile: Dockerfile
-    container_name: yolo-seed-detector
-    restart: unless-stopped
-      # Enable GPU support for CUDA (legacy format)
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=all
-      - DISPLAY=${DISPLAY:-:0}
-      - QT_X11_NO_MITSHM=1
-      - PYTHONUNBUFFERED=1
-    
-    # Mount volumes
-    volumes:
-      # X11 socket for GUI applications
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      # Device access for cameras
-      - /dev:/dev
-      # Logs and data persistence
-      - ./logs:/app/logs
-      - ./data:/app/data
-      # Optional: Mount additional camera calibration files
-      - ./calibration:/app/calibration:ro
-    
-    # Device access for cameras and serial ports
-    devices:
-      - /dev/video0:/dev/video0  # USB camera
-      - /dev/video1:/dev/video1  # CSI camera (if available)
-      - /dev/ttyUSB0:/dev/ttyUSB0  # Serial port for Arduino (adjust as needed)
-      - /dev/ttyACM0:/dev/ttyACM0  # Alternative serial port
-    
-    # Privileged mode for camera access (use cautiously)
-    privileged: true
-    
-    # Network mode
-    network_mode: host
-    
-    # Logging configuration
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "100m"
-        max-file: "3"
-
-# Networks (optional)
-networks:
-  default:
-    driver: bridge
+# Docker Compose v1 format for very old Docker Compose versions (1.17.x)
+yolo-seed-detection:
+  build: 
+    context: .
+    dockerfile: Dockerfile.jetson-fixed
+  container_name: yolo-seed-detector
+  restart: unless-stopped
+  privileged: true
+  environment:
+    - NVIDIA_VISIBLE_DEVICES=all
+    - NVIDIA_DRIVER_CAPABILITIES=all
+    - DISPLAY=${DISPLAY:-:0}
+    - QT_X11_NO_MITSHM=1
+    - PYTHONUNBUFFERED=1  
+  # Mount volumes
+  volumes:
+    # X11 socket for GUI applications
+    - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    # Device access for cameras
+    - /dev:/dev
+    # Logs and data persistence
+    - ./logs:/app/logs
+    - ./data:/app/data
+    # Optional: Mount additional camera calibration files
+    - ./calibration:/app/calibration:ro
+  
+  # Device access for cameras and serial ports
+  devices:
+    - /dev/video0:/dev/video0
+    - /dev/video1:/dev/video1
+    - /dev/ttyUSB0:/dev/ttyUSB0
+    - /dev/ttyACM0:/dev/ttyACM0
+  
+  # Network mode
+  net: host
+  
+  # Logging configuration
+  log_driver: "json-file"
+  log_opt:
+    max-size: "100m"
+    max-file: "3"
