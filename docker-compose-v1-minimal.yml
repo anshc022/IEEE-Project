@@ -1,10 +1,7 @@
 # Docker Compose v1 format for Docker Compose 1.17.x on Jetson Nano
 # Ultra-minimal configuration to avoid repository issues
 
-yolo-seed-detection:
-  build:
-    context: .
-    dockerfile: Dockerfile.ultra-minimal
+yolo-seed-detection:  build: .
   container_name: yolo-seed-detector-minimal
   restart: unless-stopped
   privileged: true
