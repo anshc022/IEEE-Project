@@ -1,7 +1,9 @@
-# Simple requirements for YOLO seed detection
+# Requirements for YOLO seed detection with Docker support
 ultralytics>=8.0.196
 opencv-python
 numpy
 matplotlib
 pyserial
 Pillow
+psutil
+tqdm
