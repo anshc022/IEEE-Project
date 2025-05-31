@@ -90,7 +90,13 @@ mkdir -p logs data calibration
 
 # Set up X11 forwarding for GUI applications
 print_status "Setting up X11 permissions for GUI applications..."
-xhost +local:docker 2>/dev/null || print_warning "Could not set X11 permissions. GUI may not work."
+if [ -n "$DISPLAY" ]; then
+    xhost +local:docker 2>/dev/null || print_warning "Could not set X11 permissions. GUI may not work."
+else
+    print_warning "DISPLAY variable not set. Setting to :0 for local display."
+    export DISPLAY=:0
+    xhost +local:docker 2>/dev/null || print_warning "Could not set X11 permissions. GUI may not work."
+fi
 
 # Check CUDA installation
 print_status "Checking CUDA installation..."
@@ -131,11 +137,11 @@ if command -v docker-compose &> /dev/null; then
     print_status "Docker Compose version: $COMPOSE_VERSION"
     
     if [[ $MAJOR_VERSION -gt 1 ]] || [[ $MAJOR_VERSION -eq 1 && $MINOR_VERSION -ge 27 ]]; then
-        print_status "Using standard docker-compose.yml (v3.3 format)"
+        print_status "Using standard docker-compose.yml (v3.3 format with GPU deploy syntax)"
         COMPOSE_FILE="docker-compose.yml"
     elif [[ $MAJOR_VERSION -eq 1 && $MINOR_VERSION -ge 18 ]]; then
-        print_status "Using legacy docker-compose-legacy.yml (v2.4 format)"
-        COMPOSE_FILE="docker-compose-legacy.yml"
+        print_status "Using compatible docker-compose-compatible.yml (v3.3 format, no GPU deploy)"
+        COMPOSE_FILE="docker-compose-compatible.yml"
     else
         print_status "Using very old docker-compose-v1.yml (v1 format)"
         COMPOSE_FILE="docker-compose-v1.yml"

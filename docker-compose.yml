@@ -7,15 +7,20 @@ services:
       dockerfile: Dockerfile
     container_name: yolo-seed-detector
     restart: unless-stopped
-    
-    # Enable GPU support for CUDA
-    runtime: nvidia
+      # Enable GPU support for CUDA
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     
     # Environment variables
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
-      - DISPLAY=${DISPLAY}
+      - DISPLAY=${DISPLAY:-:0}
       - QT_X11_NO_MITSHM=1
       - PYTHONUNBUFFERED=1
     

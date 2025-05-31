@@ -1,4 +1,4 @@
-version: '2.4'
+version: '3.3'
 
 services:
   yolo-seed-detection:
@@ -7,7 +7,8 @@ services:
       dockerfile: Dockerfile
     container_name: yolo-seed-detector
     restart: unless-stopped
-      # Enable GPU support for CUDA (legacy format)
+    
+    # Environment variables for GPU support
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all

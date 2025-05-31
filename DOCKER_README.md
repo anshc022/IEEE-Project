@@ -31,7 +31,10 @@ docker-compose up --build
 # Or run in background
 docker-compose up -d --build
 
-# If you get version errors, try these alternatives:
+# If you get GPU/runtime errors, try these alternatives:
+
+# For Docker Compose with limited GPU support:
+docker-compose -f docker-compose-compatible.yml up --build
 
 # For older Docker Compose (v2.4 format):
 docker-compose -f docker-compose-legacy.yml up --build
@@ -41,9 +44,9 @@ docker-compose -f docker-compose-v1.yml up --build
 
 # If Docker Compose is not available, use docker run directly:
 docker build -t yolo-seed-detection .
-docker run --runtime=nvidia --privileged -it \
+docker run --gpus all --privileged -it \
   -e NVIDIA_VISIBLE_DEVICES=all \
-  -e DISPLAY=$DISPLAY \
+  -e DISPLAY=${DISPLAY:-:0} \
   -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
   -v /dev:/dev \
   --net=host \
