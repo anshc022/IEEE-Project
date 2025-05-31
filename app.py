@@ -284,25 +284,137 @@ except Exception as e:
 
 # Initialize camera
 print("Initializing camera for seed detection...")
-cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-cap.set(cv2.CAP_PROP_FPS, 15)
-cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-if not cap.isOpened():
-    for i in range(1, 4):
-        cap = cv2.VideoCapture(i)
-        if cap.isOpened():
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            cap.set(cv2.CAP_PROP_FPS, 15)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            print(f"Using camera index {i}")
-            break
-    else:
-        print("Error: No camera found!")
-        exit(1)
+def gstreamer_pipeline(
+    sensor_id=0,
+    capture_width=1280,
+    capture_height=720,
+    display_width=640,
+    display_height=480,
+    framerate=30,
+    flip_method=0,
+):
+    """
+    Return GStreamer pipeline for Jetson Nano CSI camera
+    """
+    return (
+        "nvarguscamerasrc sensor-id=%d ! "
+        "video/x-raw(memory:NVMM), "
+        "width=(int)%d, height=(int)%d, "
+        "format=(string)NV12, framerate=(fraction)%d/1 ! "
+        "nvvidconv flip-method=%d ! "
+        "video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! "
+        "videoconvert ! "
+        "video/x-raw, format=(string)BGR ! appsink"
+        % (
+            sensor_id,
+            capture_width,
+            capture_height,
+            framerate,
+            flip_method,
+            display_width,
+            display_height,
+        )
+    )
+
+def try_csi_camera_configurations():
+    """Try different CSI camera configurations to find one that works"""
+    configurations = [
+        # Standard configuration
+        {"sensor_id": 0, "flip_method": 0, "framerate": 15},
+        # Try with different flip methods (can fix green screen issues)
+        {"sensor_id": 0, "flip_method": 2, "framerate": 15},  # 180 degree rotation
+        {"sensor_id": 0, "flip_method": 4, "framerate": 15},  # Horizontal flip
+        {"sensor_id": 0, "flip_method": 6, "framerate": 15},  # Vertical flip
+        # Try different sensor IDs in case multiple cameras
+        {"sensor_id": 1, "flip_method": 0, "framerate": 15},
+        # Try lower framerates for stability
+        {"sensor_id": 0, "flip_method": 0, "framerate": 10},
+    ]
+    
+    for i, config in enumerate(configurations):
+        try:
+            print(f"Trying CSI configuration {i+1}: {config}")
+            gst_str = gstreamer_pipeline(
+                sensor_id=config["sensor_id"],
+                capture_width=1280,
+                capture_height=720,
+                display_width=640,
+                display_height=480,
+                framerate=config["framerate"],
+                flip_method=config["flip_method"]
+            )
+            cap = cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
+            
+            if cap.isOpened():
+                # Test reading a frame
+                ret, test_frame = cap.read()
+                if ret and test_frame is not None and test_frame.size > 0:
+                    # Check if this configuration fixes green screen
+                    mean_channels = np.mean(test_frame, axis=(0, 1))
+                    green_dominance = mean_channels[1] / (mean_channels[0] + mean_channels[2] + 1e-6)
+                    
+                    print(f"✅ Configuration {i+1} works - Green dominance: {green_dominance:.2f}")
+                    
+                    if green_dominance < 1.5:  # Not too green-dominant
+                        print(f"🎯 Configuration {i+1} looks good! Using this one.")
+                        return cap
+                    else:
+                        print(f"⚠️ Configuration {i+1} still has green screen issue")
+                        cap.release()
+                else:
+                    cap.release()
+            
+        except Exception as e:
+            print(f"Configuration {i+1} failed: {e}")
+    
+    return None
+
+def initialize_camera():
+    """Initialize camera with fallback options for different platforms"""
+    
+    # Try CSI camera first (Jetson Nano) with multiple configurations
+    try:
+        print("Attempting to initialize CSI camera with multiple configurations...")
+        cap = try_csi_camera_configurations()
+        if cap is not None:
+            print("✅ CSI camera initialized successfully with optimal configuration")
+            return cap
+        else:
+            print("⚠️ All CSI camera configurations failed")
+    except Exception as e:
+        print(f"⚠️ CSI camera initialization failed: {e}")
+    
+    # Fallback to USB camera
+    print("Falling back to USB camera...")
+    for camera_index in [0, 1, 2, 3]:
+        try:
+            cap = cv2.VideoCapture(camera_index)
+            if cap.isOpened():
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                cap.set(cv2.CAP_PROP_FPS, 15)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                
+                # Test reading a frame
+                ret, test_frame = cap.read()
+                if ret and test_frame is not None:
+                    print(f"✅ USB camera {camera_index} working - Frame size: {test_frame.shape}")
+                    return cap
+                else:
+                    cap.release()
+        except Exception as e:
+            print(f"USB camera {camera_index} failed: {e}")
+    
+    return None
+
+# Initialize camera with proper CSI support
+cap = initialize_camera()
+
+if cap is None:
+    print("❌ Error: No working camera found!")
+    print("Make sure your CSI camera is properly connected or try a USB camera")
+    exit(1)
 
 print("Camera initialized successfully")
 
@@ -334,6 +446,30 @@ frame = None
 
 # Auto-start detection
 print("Auto-starting YOLOv11 seed detection in 3 seconds...")
+
+# Test camera before starting detection
+print("\n🔍 Testing camera...")
+test_ret, test_frame = cap.read()
+if test_ret and test_frame is not None:
+    print(f"✅ Camera test successful - Frame: {test_frame.shape}, dtype: {test_frame.dtype}")
+    
+    # Save a test frame for debugging
+    cv2.imwrite("camera_test_frame.jpg", test_frame)
+    print("📸 Test frame saved as 'camera_test_frame.jpg' for inspection")
+    
+    # Check for green screen issue
+    mean_channels = np.mean(test_frame, axis=(0, 1))
+    print(f"Channel means (B,G,R): {mean_channels}")
+    
+    if mean_channels[1] > mean_channels[0] * 2 and mean_channels[1] > mean_channels[2] * 2:
+        print("⚠️ WARNING: Green screen detected! This might be a CSI camera color issue.")
+        print("💡 Try adjusting the flip_method parameter or check camera connections.")
+    else:
+        print("✅ Camera colors look normal")
+else:
+    print("❌ Camera test failed!")
+    exit(1)
+
 time.sleep(1)
 print("3...")
 time.sleep(1)
@@ -344,13 +480,61 @@ time.sleep(1)
 
 try:
     print("Starting real-time YOLOv11 seed detection... (Auto-started)")
-
+    
     while True:
         if not paused:
             ret, frame = cap.read()
             if not ret:
                 print("Error: Could not read frame from camera")
                 break
+            
+            # Validate frame and fix potential color issues
+            if frame is None:
+                print("Warning: Received None frame")
+                continue
+                
+            # Check if frame is empty or corrupted
+            if frame.size == 0:
+                print("Warning: Received empty frame")
+                continue
+            
+            # Check frame dimensions
+            if len(frame.shape) != 3 or frame.shape[2] != 3:
+                print(f"Warning: Unexpected frame shape: {frame.shape}")
+                continue
+            
+            # Debug: Print frame info for first few frames
+            if frame_count < 3:
+                print(f"Frame {frame_count}: Shape={frame.shape}, dtype={frame.dtype}, "
+                      f"min={frame.min()}, max={frame.max()}")
+            
+            # Fix potential color space issues
+            # Some CSI cameras might output in different color formats
+            if frame.dtype != np.uint8:
+                frame = frame.astype(np.uint8)
+            
+            # Ensure frame is in BGR format (OpenCV default)
+            # Some cameras might need color space conversion
+            if frame_count == 0:
+                # Test if the image looks like it might be in wrong color space
+                mean_values = np.mean(frame, axis=(0, 1))
+                print(f"First frame channel means (BGR): {mean_values}")
+                
+                # If green channel is significantly higher, might need conversion
+                if mean_values[1] > mean_values[0] * 1.5 and mean_values[1] > mean_values[2] * 1.5:
+                    print("⚠️ Detected potential color space issue - applying correction")
+                    # Try different color space conversions
+                    try:
+                        # This might help if camera is outputting YUV or similar
+                        frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR)
+                        print("Applied YUV to BGR conversion")
+                    except:
+                        try:
+                            # Alternative: swap channels if BGR is actually RGB
+                            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                            print("Applied RGB to BGR conversion")
+                        except:
+                            print("Could not apply color conversion, using original frame")
                 
             inference_start = time.time()
               # YOLOv11 inference with CUDA optimization
