@@ -31,6 +31,9 @@ docker-compose up --build
 # Or run in background
 docker-compose up -d --build
 
+# If you get package/repository errors, try the minimal version:
+docker-compose -f docker-compose-minimal.yml up --build
+
 # If you get GPU/runtime errors, try these alternatives:
 
 # For Docker Compose with limited GPU support:
@@ -156,6 +159,29 @@ ENV CUDA_CACHE_MAXSIZE=1073741824  # 1GB cache limit
 3. **Check PyTorch CUDA:**
    ```bash
    docker-compose exec yolo-seed-detection python3 -c "import torch; print(torch.cuda.is_available())"
+   ```
+
+### Package Repository Issues
+
+1. **GPG key errors (Kitware, etc.):**
+   ```bash
+   # Use the minimal Dockerfile which removes problematic repositories
+   docker-compose -f docker-compose-minimal.yml up --build
+   ```
+
+2. **Package not found errors:**
+   ```bash
+   # Try building with the minimal version that uses fewer dependencies
+   docker build -f Dockerfile.minimal -t yolo-seed-detection-minimal .
+   ```
+
+3. **Ubuntu version compatibility:**
+   ```bash
+   # Check your Ubuntu version
+   lsb_release -a
+   
+   # If using Ubuntu 20.04+, some packages may have different names
+   # The minimal Dockerfile handles this automatically
    ```
 
 ### Memory Issues

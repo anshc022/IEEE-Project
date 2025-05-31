@@ -1,0 +1,63 @@
+# Minimal Dockerfile for YOLOv11 Seed Detection on Jetson Nano
+# Uses minimal dependencies to avoid package conflicts
+
+FROM nvcr.io/nvidia/l4t-pytorch:r32.7.1-pth1.10-py3
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV QT_X11_NO_MITSHM=1
+ENV DISPLAY=:0
+
+# Set working directory
+WORKDIR /app
+
+# Install minimal system dependencies
+RUN apt-get update && \
+    # Remove any problematic repository files
+    rm -f /etc/apt/sources.list.d/kitware* && \
+    rm -f /etc/apt/sources.list.d/*kitware* && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+    python3-pip \
+    python3-dev \
+    python3-opencv \
+    libgstreamer1.0-0 \
+    gstreamer1.0-plugins-base \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-tools \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    v4l-utils \
+    wget \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# Upgrade pip
+RUN python3 -m pip install --upgrade pip
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+
+# Install Python dependencies with error handling
+RUN pip3 install --no-cache-dir -r requirements.txt || \
+    (echo "Some packages failed, installing essentials only..." && \
+     pip3 install --no-cache-dir ultralytics opencv-python-headless PyQt5 pyserial)
+
+# Copy application files
+COPY . .
+
+# Create necessary directories
+RUN mkdir -p /app/logs /app/data
+
+# Set permissions
+RUN chmod +x *.py 2>/dev/null || true
+RUN chmod +x *.sh 2>/dev/null || true
+
+# Create a non-root user for security
+RUN useradd -m -u 1000 jetson && \
+    chown -R jetson:jetson /app
+USER jetson
+
+# Default command
+CMD ["python3", "app.py"]
