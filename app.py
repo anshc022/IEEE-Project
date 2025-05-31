@@ -239,20 +239,36 @@ try:
     
     print(f"Model classes detected: {CLASS_NAMES}")
     print(f"Number of classes: {len(CLASS_NAMES)}")
-    
-    # Set device (GPU if available, otherwise CPU)
+      # Set device (GPU if available, otherwise CPU)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     if torch.cuda.is_available():
-        print(f"Using CUDA: {torch.cuda.get_device_name(0)}")
-        print(f"CUDA memory available: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
-        # Warm up the model on GPU
-        dummy_img = torch.zeros((1, 3, INPUT_SIZE, INPUT_SIZE)).to(device)
+        print(f"🚀 Using CUDA GPU: {torch.cuda.get_device_name(0)}")
+        print(f"   CUDA version: {torch.version.cuda}")
+        print(f"   GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+        
+        # Move model to GPU
+        model.to(device)
+        
+        # Optimize for inference
+        model.fuse()  # Fuse Conv2d + BatchNorm layers for faster inference
+        
+        # Enable CUDA optimizations
+        torch.backends.cudnn.benchmark = True  # Optimize for consistent input sizes
+        torch.backends.cudnn.deterministic = False  # Allow non-deterministic for speed
+        
+        # Warm up the model on GPU with proper tensor creation
+        print("🔥 Warming up model on GPU...")
+        dummy_img = torch.zeros((1, 3, INPUT_SIZE, INPUT_SIZE), device=device, dtype=torch.float16)
         with torch.no_grad():
-            _ = model.predict(dummy_img, verbose=False)
-        print("Model warmed up on GPU")
+            for _ in range(3):  # Multiple warmup runs
+                _ = model.predict(dummy_img, device=device, verbose=False, half=True)
+        print("✅ Model warmed up on GPU with FP16 optimization")
     else:
-        print("Using CPU")
+        print("⚠️  Using CPU (CUDA not available)")
+        # CPU optimizations
+        model.to(device)
+        torch.set_num_threads(4)  # Optimize for Jetson Nano's quad-core CPU
         
     print("Model initialization complete!")
 
@@ -337,16 +353,30 @@ try:
                 break
                 
             inference_start = time.time()
-            
-            # YOLOv11 inference
+              # YOLOv11 inference with CUDA optimization
             with torch.no_grad():
-                results = model.predict(
-                    frame, 
-                    imgsz=INPUT_SIZE, 
-                    conf=CONFIDENCE_THRESHOLD, 
-                    iou=IOU_THRESHOLD, 
-                    verbose=False
-                )
+                # Use device-specific optimizations
+                if torch.cuda.is_available():
+                    # GPU inference with FP16 for speed
+                    results = model.predict(
+                        frame, 
+                        imgsz=INPUT_SIZE, 
+                        conf=CONFIDENCE_THRESHOLD, 
+                        iou=IOU_THRESHOLD, 
+                        verbose=False,
+                        device=device,
+                        half=True  # Use FP16 for faster inference on GPU
+                    )
+                else:
+                    # CPU inference
+                    results = model.predict(
+                        frame, 
+                        imgsz=INPUT_SIZE, 
+                        conf=CONFIDENCE_THRESHOLD, 
+                        iou=IOU_THRESHOLD, 
+                        verbose=False,
+                        device=device
+                    )
                 
                 if results and len(results) > 0 and hasattr(results[0], "boxes") and results[0].boxes is not None:
                     # Extract detection data from YOLOv11 results
