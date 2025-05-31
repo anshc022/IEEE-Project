@@ -1,0 +1,42 @@
+yolo-seed-detection:
+  build: 
+    context: .
+    dockerfile: Dockerfile
+  container_name: yolo-seed-detector
+  restart: unless-stopped
+  
+  # Environment variables
+  environment:
+    - NVIDIA_VISIBLE_DEVICES=all
+    - NVIDIA_DRIVER_CAPABILITIES=all
+    - DISPLAY=${DISPLAY:-:0}
+    - QT_X11_NO_MITSHM=1
+    - PYTHONUNBUFFERED=1
+  
+  # Mount volumes
+  volumes:
+    # X11 socket for GUI applications
+    - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    # Device access for cameras
+    - /dev:/dev
+    # Logs and data persistence
+    - ./logs:/app/logs
+    - ./data:/app/data
+    # Optional: Mount additional camera calibration files
+    - ./calibration:/app/calibration:ro
+  
+  # Device access for cameras and serial ports
+  devices:
+    - /dev/video0:/dev/video0  # USB camera
+    - /dev/video1:/dev/video1  # CSI camera (if available)
+    - /dev/ttyUSB0:/dev/ttyUSB0  # Serial port for Arduino (adjust as needed)
+    - /dev/ttyACM0:/dev/ttyACM0  # Alternative serial port
+  
+  # Privileged mode for camera access (use cautiously)
+  privileged: true
+  
+  # Network mode
+  net: host
+  
+  # For GPU support with older Docker Compose, you may need to use docker run directly
+  # or install nvidia-docker2 and use: --runtime=nvidia

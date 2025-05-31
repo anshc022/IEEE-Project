@@ -121,26 +121,48 @@ print_status "Setup completed successfully!"
 print_status "You may need to log out and back in for group changes to take effect."
 print_status ""
 
-# Check Docker Compose version and provide appropriate instructions
-COMPOSE_VERSION=$(docker-compose --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)
-print_status "Detected Docker Compose version: $COMPOSE_VERSION"
-
-if [ -n "$COMPOSE_VERSION" ] && [ $(echo "$COMPOSE_VERSION" | cut -d. -f1) -lt 2 ]; then
-    if [ $(echo "$COMPOSE_VERSION" | cut -d. -f2) -lt 12 ]; then
-        print_warning "Your Docker Compose version is quite old ($COMPOSE_VERSION)"
-        print_warning "If you encounter version errors, use the legacy file:"
-        print_status "docker-compose -f docker-compose-legacy.yml up --build"
-        print_status ""
+# Detect Docker Compose version and recommend appropriate command
+print_status "Detecting Docker Compose version..."
+if command -v docker-compose &> /dev/null; then
+    COMPOSE_VERSION=$(docker-compose --version | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    MAJOR_VERSION=$(echo $COMPOSE_VERSION | cut -d. -f1)
+    MINOR_VERSION=$(echo $COMPOSE_VERSION | cut -d. -f2)
+    
+    print_status "Docker Compose version: $COMPOSE_VERSION"
+    
+    if [[ $MAJOR_VERSION -gt 1 ]] || [[ $MAJOR_VERSION -eq 1 && $MINOR_VERSION -ge 27 ]]; then
+        print_status "Using standard docker-compose.yml (v3.3 format)"
+        COMPOSE_FILE="docker-compose.yml"
+    elif [[ $MAJOR_VERSION -eq 1 && $MINOR_VERSION -ge 18 ]]; then
+        print_status "Using legacy docker-compose-legacy.yml (v2.4 format)"
+        COMPOSE_FILE="docker-compose-legacy.yml"
+    else
+        print_status "Using very old docker-compose-v1.yml (v1 format)"
+        COMPOSE_FILE="docker-compose-v1.yml"
     fi
+else
+    print_warning "Docker Compose not found. Using direct docker run command."
+    COMPOSE_FILE=""
 fi
 
+print_status ""
 print_status "To build and run the application:"
 print_status "1. cd to your project directory"
-print_status "2. Run: docker-compose up --build"
-print_status ""
-print_status "If you get version errors, try:"
-print_status "docker-compose -f docker-compose-legacy.yml up --build"
-print_status ""
-print_status "To run in background: docker-compose up -d --build"
-print_status "To view logs: docker-compose logs -f"
-print_status "To stop: docker-compose down"
+
+if [ -n "$COMPOSE_FILE" ]; then
+    if [ "$COMPOSE_FILE" = "docker-compose.yml" ]; then
+        print_status "2. Run: docker-compose up --build"
+    else
+        print_status "2. Run: docker-compose -f $COMPOSE_FILE up --build"
+    fi
+    print_status ""
+    print_status "To run in background: docker-compose -f $COMPOSE_FILE up -d --build"
+    print_status "To view logs: docker-compose -f $COMPOSE_FILE logs -f"
+    print_status "To stop: docker-compose -f $COMPOSE_FILE down"
+else
+    print_status "2. Run: docker build -t yolo-seed-detection ."
+    print_status "3. Run: docker run --runtime=nvidia --privileged -it \\"
+    print_status "   -e NVIDIA_VISIBLE_DEVICES=all -e DISPLAY=\$DISPLAY \\"
+    print_status "   -v /tmp/.X11-unix:/tmp/.X11-unix:rw -v /dev:/dev \\"
+    print_status "   --net=host yolo-seed-detection"
+fi

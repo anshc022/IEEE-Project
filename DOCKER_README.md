@@ -25,14 +25,29 @@ chmod +x docker-setup.sh
 ### 2. Build and Run
 
 ```bash
-# Build and start the container
+# Build and start the container (default - Docker Compose v3.3)
 docker-compose up --build
 
 # Or run in background
 docker-compose up -d --build
 
-# If you get version errors with docker-compose.yml, use the legacy version:
+# If you get version errors, try these alternatives:
+
+# For older Docker Compose (v2.4 format):
 docker-compose -f docker-compose-legacy.yml up --build
+
+# For very old Docker Compose (v1 format):
+docker-compose -f docker-compose-v1.yml up --build
+
+# If Docker Compose is not available, use docker run directly:
+docker build -t yolo-seed-detection .
+docker run --runtime=nvidia --privileged -it \
+  -e NVIDIA_VISIBLE_DEVICES=all \
+  -e DISPLAY=$DISPLAY \
+  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+  -v /dev:/dev \
+  --net=host \
+  yolo-seed-detection
 ```
 
 ### 3. Monitor and Control
@@ -87,26 +102,6 @@ ENV CUDA_CACHE_MAXSIZE=1073741824  # 1GB cache limit
 ```
 
 ## Troubleshooting
-
-### Docker Compose Version Issues
-
-If you see "Version in docker-compose.yml is unsupported" error:
-
-1. **Check your Docker Compose version:**
-   ```bash
-   docker-compose --version
-   ```
-
-2. **For older versions (< 1.12), use the legacy file:**
-   ```bash
-   docker-compose -f docker-compose-legacy.yml up --build
-   ```
-
-3. **Update Docker Compose (recommended):**
-   ```bash
-   sudo curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-   sudo chmod +x /usr/local/bin/docker-compose
-   ```
 
 ### Camera Issues
 
