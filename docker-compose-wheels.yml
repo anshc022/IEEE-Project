@@ -1,0 +1,21 @@
+# Docker Compose v1 format using pre-built wheels
+# For Docker Compose 1.17.x on Jetson Nano
+
+yolo-seed-detection:
+  build: .
+  dockerfile: Dockerfile.wheels
+  container_name: yolo-wheels
+  privileged: true
+  environment:
+    - DISPLAY=:0
+    - QT_X11_NO_MITSHM=1
+    - PYTHONUNBUFFERED=1
+  volumes:
+    - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    - /dev:/dev
+    - ./logs:/app/logs
+    - ./data:/app/data
+  devices:
+    - /dev/video0:/dev/video0
+    - /dev/video1:/dev/video1
+  net: host

@@ -28,10 +28,18 @@ RUN python3 -m pip install --upgrade pip
 
 # Install only essential Python packages
 RUN pip3 install --no-cache-dir \
-    ultralytics \
     opencv-python-headless \
     pillow \
     numpy \
+    torch \
+    torchvision \
+    matplotlib \
+    pyyaml \
+    requests \
+    pandas \
+    seaborn \
+    # Install ultralytics from GitHub for ARM64 compatibility
+    git+https://github.com/ultralytics/ultralytics.git@v8.0.196 \
     pyserial
 
 # Copy application files

@@ -1,0 +1,45 @@
+# Dockerfile for testing with pre-built wheels
+# Uses no system packages at all, only pip with pre-built ARM64 wheels
+
+FROM nvcr.io/nvidia/l4t-pytorch:r32.7.1-pth1.10-py3
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV QT_X11_NO_MITSHM=1
+ENV DISPLAY=:0
+
+# Set working directory
+WORKDIR /app
+
+# Create required directories
+RUN mkdir -p /app/logs /app/data /app/models
+
+# Install Python packages from pre-built wheels
+RUN pip3 install --no-cache-dir \
+    https://developer.download.nvidia.com/compute/redist/jp/v461/pytorch/torch-1.10.0-cp36-cp36m-linux_aarch64.whl \
+    https://developer.download.nvidia.com/compute/redist/jp/v461/pytorch/torchvision-0.11.0-cp36-cp36m-linux_aarch64.whl \
+    opencv-python-headless==4.6.0.66 \
+    pillow==9.3.0 \
+    numpy==1.19.5 \
+    pyserial==3.5 \
+    matplotlib==3.3.4 \
+    pyyaml==5.4.1 \
+    requests==2.27.1 \
+    pandas==1.1.5 \
+    seaborn==0.11.2 \
+    # Try installing ultralytics with version constraint
+    ultralytics==8.0.196 || pip3 install git+https://github.com/ultralytics/ultralytics.git@v8.0.196
+
+# Copy application files
+COPY . .
+
+# Set permissions
+RUN chmod +x *.py
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s \
+    CMD python3 -c "import cv2; print('OpenCV OK')" || exit 1
+
+# Default command
+CMD ["python3", "app.py"]
