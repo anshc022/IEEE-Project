@@ -12,6 +12,9 @@ import time
 from pathlib import Path
 from ultralytics import YOLO
 import gc
+import psutil
+from typing import Dict, List, Tuple, Union, Any, Callable
+import platform
 
 class CUDAPerformanceTester:
     def __init__(self, model_path="corn11.pt"):
@@ -19,33 +22,125 @@ class CUDAPerformanceTester:
         self.model = None
         self.device = None
         self.results = {}
+        self.baseline_memory = 0
         
-    def setup_device(self):
-        """Setup and detect CUDA capabilities"""
-        print("🔧 Setting up device...")
+    def get_system_info(self) -> Dict:
+        """Get detailed system information"""
+        info = {
+            'os': platform.system(),
+            'os_version': platform.version(),
+            'python_version': platform.python_version(),
+            'pytorch_version': torch.__version__,
+            'cpu_count': psutil.cpu_count(logical=False),
+            'cpu_threads': psutil.cpu_count(logical=True),
+            'total_ram': f"{psutil.virtual_memory().total / (1024**3):.1f} GB"
+        }
+        
+        if torch.cuda.is_available():
+            info.update({
+                'cuda_version': torch.version.cuda,
+                'cudnn_version': torch.backends.cudnn.version(),
+                'gpu_name': torch.cuda.get_device_name(0),
+                'gpu_count': torch.cuda.device_count()
+            })
+        
+        return info
+        
+    def setup_device(self) -> bool:
+        """Setup and detect CUDA capabilities with detailed reporting"""
+        print("\n🔍 Analyzing System Configuration...")
+        
+        sys_info = self.get_system_info()
+        print(f"OS: {sys_info['os']} {sys_info['os_version']}")
+        print(f"Python: {sys_info['python_version']}")
+        print(f"PyTorch: {sys_info['pytorch_version']}")
+        print(f"CPU Cores: {sys_info['cpu_count']} (Physical), {sys_info['cpu_threads']} (Logical)")
+        print(f"System RAM: {sys_info['total_ram']}")
         
         if torch.cuda.is_available():
             self.device = 'cuda'
-            gpu_name = torch.cuda.get_device_name(0)
             gpu_props = torch.cuda.get_device_properties(0)
-            memory_gb = gpu_props.total_memory / 1024**3
             
-            print(f"✅ CUDA Device: {gpu_name}")
-            print(f"📊 Total Memory: {memory_gb:.1f} GB")
-            print(f"🔧 Compute Capability: {gpu_props.major}.{gpu_props.minor}")
-            print(f"⚡ Multiprocessors: {gpu_props.multiprocessor_count}")
+            print("\n🚀 CUDA Configuration:")
+            print(f"CUDA Version: {sys_info['cuda_version']}")
+            print(f"cuDNN Version: {sys_info['cudnn_version']}")
+            print(f"GPU: {sys_info['gpu_name']}")
+            print(f"Compute Capability: {gpu_props.major}.{gpu_props.minor}")
+            print(f"Total GPU Memory: {gpu_props.total_memory/1024**3:.1f} GB")
+            print(f"Multi-Processors: {gpu_props.multi_processor_count}")
+            print(f"Warp Size: {gpu_props.warp_size}")
+            
+            # Test CUDA memory management
+            self.baseline_memory = torch.cuda.memory_allocated(0)
             
             # Enable optimizations
-            torch.backends.cudnn.benchmark = True
-            torch.backends.cudnn.deterministic = False
-            torch.backends.cudnn.allow_tf32 = True
-            torch.backends.cuda.matmul.allow_tf32 = True
-            
+            self._enable_cuda_optimizations()
             return True
         else:
             self.device = 'cpu'
-            print("⚠️  CUDA not available, using CPU")
+            print("\n⚠️ CUDA not available. System will run on CPU.")
+            print("💡 To enable CUDA, ensure you have:")
+            print("  1. An NVIDIA GPU")
+            print("  2. CUDA Toolkit installed")
+            print("  3. CUDA-enabled PyTorch installed")
             return False
+    
+    def _enable_cuda_optimizations(self):
+        """Enable all available CUDA optimizations"""
+        print("\n⚡ Enabling CUDA Optimizations...")
+        
+        # Basic optimizations
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        
+        # Memory management
+        torch.cuda.empty_cache()
+        
+        # Advanced settings
+        if hasattr(torch.cuda, 'memory_stats'):
+            torch.cuda.memory_stats(True)
+        
+        print("✅ CUDA optimizations enabled")
+    
+    def test_memory_management(self) -> Dict:
+        """Test GPU memory management capabilities"""
+        if self.device != 'cuda':
+            return {"error": "CUDA not available"}
+        
+        print("\n🧪 Testing GPU Memory Management...")
+        results = {}
+        
+        # Test memory allocation
+        try:
+            # Record initial state
+            initial_memory = torch.cuda.memory_allocated(0)
+            
+            # Test large tensor allocation
+            test_size = 1000
+            test_tensor = torch.zeros((test_size, test_size), device='cuda')
+            peak_memory = torch.cuda.max_memory_allocated(0)
+            
+            # Test memory release
+            del test_tensor
+            torch.cuda.empty_cache()
+            final_memory = torch.cuda.memory_allocated(0)
+            
+            results = {
+                "initial_memory_mb": initial_memory / 1024**2,
+                "peak_memory_mb": peak_memory / 1024**2,
+                "final_memory_mb": final_memory / 1024**2,
+                "memory_leaked_mb": (final_memory - initial_memory) / 1024**2
+            }
+            
+            print(f"Peak Memory Usage: {results['peak_memory_mb']:.1f} MB")
+            print(f"Memory Leaked: {results['memory_leaked_mb']:.1f} MB")
+            
+        except Exception as e:
+            results["error"] = str(e)
+        
+        return results
     
     def load_model(self, optimize=True):
         """Load YOLO model with optimizations"""
@@ -404,6 +499,301 @@ class CUDAPerformanceTester:
         
         return report
 
+    def test_pcie_bandwidth(self) -> Dict[str, Union[float, str]]:
+        """Test PCIe bandwidth between CPU and GPU"""
+        if self.device != 'cuda':
+            return {"error": "CUDA not available"}
+        
+        print("\n🔄 Testing PCIe Bandwidth...")
+        results: Dict[str, Union[float, str]] = {}
+        
+        try:
+            # Test sizes from 1MB to 1GB
+            sizes = [2**i for i in range(20, 30)]  # 1MB to 1GB
+            h2d_speeds: List[float] = []  # Host to Device
+            d2h_speeds: List[float] = []  # Device to Host
+            
+            for size in sizes:
+                # Host to Device transfer
+                cpu_data = torch.randn(size, dtype=torch.float32)
+                start = torch.cuda.Event(enable_timing=True)
+                end = torch.cuda.Event(enable_timing=True)
+                
+                start.record(None)
+                gpu_data = cpu_data.cuda()
+                end.record(None)
+                torch.cuda.synchronize()
+                h2d_speeds.append(size * 4 / (start.elapsed_time(end) / 1000) / 1e9)  # GB/s
+                
+                # Device to Host transfer
+                start.record(None)
+                cpu_data = gpu_data.cpu()
+                end.record(None)
+                torch.cuda.synchronize()
+                d2h_speeds.append(size * 4 / (start.elapsed_time(end) / 1000) / 1e9)  # GB/s
+                
+                del cpu_data, gpu_data
+                torch.cuda.empty_cache()
+            
+            results = {
+                "h2d_bandwidth_gbs": float(max(h2d_speeds)),
+                "d2h_bandwidth_gbs": float(max(d2h_speeds)),
+                "avg_h2d_bandwidth_gbs": float(np.mean(h2d_speeds)),
+                "avg_d2h_bandwidth_gbs": float(np.mean(d2h_speeds))
+            }
+            
+            print(f"Host to Device Bandwidth: {results['h2d_bandwidth_gbs']:.1f} GB/s")
+            print(f"Device to Host Bandwidth: {results['d2h_bandwidth_gbs']:.1f} GB/s")
+            
+        except Exception as e:
+            results["error"] = str(e)
+        
+        return results
+
+    def test_multi_gpu(self) -> Dict[str, Any]:
+        """Test multi-GPU capabilities if available"""
+        results: Dict[str, Any] = {}
+        
+        if not torch.cuda.is_available():
+            return {"error": "CUDA not available"}
+        
+        gpu_count = torch.cuda.device_count()
+        if gpu_count < 2:
+            return {"error": "Multiple GPUs not available", "gpu_count": gpu_count}
+        
+        print(f"\n💻 Testing Multi-GPU Configuration ({gpu_count} GPUs)...")
+        
+        try:
+            # Test peer-to-peer access
+            p2p_matrix: List[List[bool]] = []
+            for i in range(gpu_count):
+                row: List[bool] = []
+                for j in range(gpu_count):
+                    if i != j:
+                        can_access = torch.cuda.can_device_access_peer(i, j)
+                        row.append(bool(can_access))
+                    else:
+                        row.append(True)
+                p2p_matrix.append(row)
+            
+            results["gpu_count"] = gpu_count
+            results["peer_to_peer_matrix"] = p2p_matrix
+            
+            # Test multi-GPU data transfer
+            transfer_speeds: List[float] = []
+            for i in range(gpu_count):
+                for j in range(gpu_count):
+                    if i != j:
+                        with torch.cuda.device(i):
+                            data = torch.randn(1024*1024*32, device=f'cuda:{i}')  # 128MB
+                            start = torch.cuda.Event(enable_timing=True)
+                            end = torch.cuda.Event(enable_timing=True)
+                            
+                            start.record(None)
+                            data_dest = data.to(f'cuda:{j}')
+                            end.record(None)
+                            torch.cuda.synchronize()
+                            
+                            speed = float((data.element_size() * data.nelement()) / (start.elapsed_time(end) / 1000) / 1e9)
+                            transfer_speeds.append(speed)
+                            
+                            del data, data_dest
+                            torch.cuda.empty_cache()
+            
+            results["avg_transfer_speed_gbs"] = float(np.mean(transfer_speeds))
+            print(f"Average GPU-to-GPU Transfer Speed: {results['avg_transfer_speed_gbs']:.1f} GB/s")
+            
+        except Exception as e:
+            results["error"] = str(e)
+        
+        return results
+
+    def test_tensor_cores(self) -> Dict[str, Union[bool, float, str]]:
+        """Test tensor core capabilities and performance"""
+        if self.device != 'cuda':
+            return {"error": "CUDA not available"}
+        
+        print("\n⚡ Testing Tensor Core Capabilities...")
+        results: Dict[str, Union[bool, float, str]] = {}
+        
+        try:
+            # Check if tensor cores are available
+            gpu_props = torch.cuda.get_device_properties(torch.cuda.current_device())
+            has_tensor_cores = bool(gpu_props.major >= 7)  # Volta (sm_70) and newer
+            
+            if not has_tensor_cores:
+                return {"error": "Tensor Cores not available on this GPU"}
+            
+            # Test FP16 matrix multiplication performance
+            matrix_size = 4096
+            iterations = 100
+            
+            # FP32 baseline
+            a = torch.randn(matrix_size, matrix_size, device='cuda')
+            b = torch.randn(matrix_size, matrix_size, device='cuda')
+            
+            torch.cuda.synchronize()
+            start_fp32 = time.perf_counter()
+            
+            for _ in range(iterations):
+                _ = torch.matmul(a, b)
+            
+            torch.cuda.synchronize()
+            fp32_time = time.perf_counter() - start_fp32
+            
+            # FP16 with tensor cores
+            a_half = a.half()
+            b_half = b.half()
+            
+            torch.cuda.synchronize()
+            start_fp16 = time.perf_counter()
+            
+            for _ in range(iterations):
+                _ = torch.matmul(a_half, b_half)
+            
+            torch.cuda.synchronize()
+            fp16_time = time.perf_counter() - start_fp16
+            
+            speedup = fp32_time / fp16_time
+            
+            results = {
+                "has_tensor_cores": has_tensor_cores,
+                "fp32_time": float(fp32_time),
+                "fp16_time": float(fp16_time),
+                "speedup": float(speedup)
+            }
+            
+            print(f"Tensor Core Speedup: {speedup:.2f}x")
+            print(f"FP16 Time: {fp16_time:.3f}s")
+            print(f"FP32 Time: {fp32_time:.3f}s")
+            
+        except Exception as e:
+            results["error"] = str(e)
+        
+        return results
+
+    def test_memory_fragmentation(self) -> Dict[str, Union[float, str]]:
+        """Test GPU memory fragmentation and allocation patterns"""
+        if self.device != 'cuda':
+            return {"error": "CUDA not available"}
+        
+        print("\n🧩 Testing Memory Fragmentation...")
+        results: Dict[str, Union[float, str]] = {}
+        
+        try:
+            # Initial state
+            torch.cuda.empty_cache()
+            initial_memory = float(torch.cuda.memory_allocated(0))
+            
+            # Create fragmentation by allocating and freeing different sized tensors
+            tensors: List[torch.Tensor] = []
+            allocation_sizes = [2**i for i in range(20, 25)]  # 1MB to 16MB
+            
+            for size in allocation_sizes:
+                tensors.append(torch.zeros(size, device='cuda'))
+            
+            # Free every other tensor
+            for i in range(0, len(tensors), 2):
+                del tensors[i:i+1]  # Delete slice to avoid index shifting
+            
+            # Try to allocate a large tensor
+            try:
+                large_tensor = torch.zeros(2**26, device='cuda')  # 64MB
+                del large_tensor
+                fragmentation_impact = "Low"
+            except RuntimeError:
+                fragmentation_impact = "High"
+            
+            # Cleanup
+            del tensors
+            torch.cuda.empty_cache()
+            
+            final_memory = float(torch.cuda.memory_allocated(0))
+            
+            results = {
+                "initial_memory_mb": initial_memory / 1024**2,
+                "final_memory_mb": final_memory / 1024**2,
+                "fragmentation_impact": fragmentation_impact,
+                "memory_leaked_mb": (final_memory - initial_memory) / 1024**2
+            }
+            
+            print(f"Fragmentation Impact: {fragmentation_impact}")
+            print(f"Memory Leaked: {results['memory_leaked_mb']:.1f} MB")
+            
+        except Exception as e:
+            results["error"] = str(e)
+        
+        return results
+
+    def run_comprehensive_cuda_test(self) -> Dict[str, Any]:
+        """Run all CUDA performance tests and generate a comprehensive report"""
+        print("🚀 Starting Comprehensive CUDA Performance Test...")
+        
+        report: Dict[str, Any] = {
+            "system_info": self.get_system_info(),
+            "tests": {}
+        }
+        
+        # Basic CUDA setup test
+        try:
+            print("\n📋 Testing CUDA Setup...")
+            cuda_available = torch.cuda.is_available()
+            if not cuda_available:
+                return {
+                    "error": "CUDA not available",
+                    "system_info": report["system_info"]
+                }
+            
+            report["tests"]["cuda_setup"] = {
+                "cuda_available": cuda_available,
+                "device_count": torch.cuda.device_count(),
+                "current_device": torch.cuda.current_device(),
+                "device_capability": torch.cuda.get_device_capability(),
+                "device_name": torch.cuda.get_device_name(),
+            }
+            
+            # Run all tests
+            test_functions: List[Tuple[str, Callable[[], Dict[str, Any]]]] = [
+                ("pcie_bandwidth", self.test_pcie_bandwidth),
+                ("memory_management", self.test_memory_management),
+                ("memory_fragmentation", self.test_memory_fragmentation),
+                ("tensor_cores", self.test_tensor_cores)
+            ]
+            
+            if torch.cuda.device_count() > 1:
+                test_functions.append(("multi_gpu", self.test_multi_gpu))
+            
+            for test_name, test_func in test_functions:
+                print(f"\n🔍 Running {test_name} test...")
+                try:
+                    result: Dict[str, Any] = test_func()
+                    report["tests"][test_name] = result
+                except Exception as e:
+                    report["tests"][test_name] = {
+                        "error": f"Test failed: {str(e)}"
+                    }
+            
+            # Summary
+            print("\n📊 Test Summary:")
+            success_count = sum(1 for test in report["tests"].values() if "error" not in test)
+            total_tests = len(report["tests"])
+            
+            report["summary"] = {
+                "total_tests": total_tests,
+                "successful_tests": success_count,
+                "failed_tests": total_tests - success_count,
+                "success_rate": f"{(success_count/total_tests)*100:.1f}%"
+            }
+            
+            print(f"Total Tests: {total_tests}")
+            print(f"Successful: {success_count}")
+            print(f"Failed: {total_tests - success_count}")
+            print(f"Success Rate: {report['summary']['success_rate']}")
+            
+        except Exception as e:
+            report["error"] = str(e)
+        
+        return report
 def main():
     """Main function"""
     print("🌱 YOLO Seed Detection - CUDA Performance Benchmark")

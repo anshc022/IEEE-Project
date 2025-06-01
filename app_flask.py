@@ -1,4 +1,3 @@
-import os
 import cv2
 import torch
 import numpy as np
@@ -12,6 +11,7 @@ from datetime import datetime
 import threading
 import atexit
 import gc
+
 
 app = Flask(__name__)
 
@@ -43,10 +43,13 @@ CONFIDENCE_THRESHOLD = 0.5
 IOU_THRESHOLD = 0.7
 INPUT_SIZE = 640
 
+# Constants
+CLASS_NAMES = ['corn', 'defective']  # Your class names
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
 # Global variables
 model = None
 cap = None
-CLASS_NAMES = []
 
 # Enhanced CUDA detection and configuration
 def setup_device():
@@ -185,81 +188,36 @@ servo_status = {
 }
 
 def initialize_model():
-    """Initialize YOLO model with advanced CUDA optimization"""
-    global model, CLASS_NAMES
-    if not Path(MODEL_PATH).exists():
-        raise FileNotFoundError(f"Model file '{MODEL_PATH}' not found!")
+    """Initialize the YOLO model with GPU optimizations"""
+    global model
     
-    print(f"🤖 Loading YOLO model on {device}...")
-    model = YOLO(MODEL_PATH)
+    if model is not None:
+        return model
+        
+    print("🚀 Initializing YOLO model...")
+    model = YOLO('corn11.pt')
     
-    if hasattr(model, 'names'):
-        CLASS_NAMES = list(model.names.values())
-    
-    # Move model to device and optimize
-    model.to(device)
-    
-    if device == 'cuda':
+    if device == 'cuda' and torch.cuda.is_available():
+        print(f"🎯 Using GPU acceleration")
+        
+        # Move model to GPU and optimize
+        model.to(device)
+        
         # Enable CUDA optimizations
-        model.fuse()  # Fuse Conv2d + BatchNorm + ReLU layers
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
         
-        # Enable mixed precision for faster inference
-        try:
-            # Convert model to half precision (FP16)
-            model.model.half()
-            print("✅ Enabled FP16 mixed precision for 2x faster inference")
-        except Exception as e:
-            print(f"⚠️  FP16 not available: {e}")
-        
-        # Advanced CUDA optimizations
-        try:
-            # Enable compilation optimizations (PyTorch 2.0+)
-            if hasattr(torch, 'compile'):
-                model.model = torch.compile(model.model, mode='max-autotune')
-                print("✅ Enabled torch.compile optimizations")
-        except Exception as e:
-            print(f"ℹ️  torch.compile not available: {e}")
-        
-        # Warm up the model with multiple dummy inferences
-        print("🔥 Warming up CUDA model...")
-        warmup_sizes = [(INPUT_SIZE, INPUT_SIZE), (320, 320), (416, 416)]  # Multiple sizes for robustness
-        
-        for i, (h, w) in enumerate(warmup_sizes):
-            try:
-                dummy_input = torch.randn(1, 3, h, w, device=device, dtype=torch.float16)
-                with torch.no_grad():
-                    for _ in range(2):  # 2 warmup runs per size
-                        _ = model.predict(dummy_input, verbose=False, device=device, half=True)
-                print(f"✅ Warmup {i+1}/{len(warmup_sizes)} completed ({h}x{w})")
-            except Exception as e:
-                print(f"⚠️  Warmup {i+1} failed: {e}")
-        
-        # Optimize GPU memory allocation
-        try:
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()  # Ensure all operations are complete
-        except:
-            pass
-        
-        # Print GPU memory usage after optimization
-        if torch.cuda.is_available():
-            memory_used = torch.cuda.memory_allocated(0) / 1024**3
-            memory_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
-            print(f"📈 GPU Memory Usage: {memory_used:.2f} GB / {memory_total:.1f} GB ({memory_used/memory_total*100:.1f}%)")
-    
+        # Warm up the model
+        print("🔥 Warming up model...")
+        dummy_input = torch.zeros((1, 3, INPUT_SIZE, INPUT_SIZE), device=device, dtype=torch.float16)
+        with torch.no_grad():
+            for _ in range(3):
+                _ = model(dummy_input, verbose=False)
+        print("✅ Model ready for inference")
     else:
-        # CPU optimizations
-        print("🔧 Applying CPU optimizations...")
-        torch.set_num_threads(min(8, torch.get_num_threads()))  # Limit threads for stability
-        # Enable CPU optimizations
-        try:
-            torch.set_float32_matmul_precision('medium')  # Trade precision for speed
-        except:
-            pass
+        print("⚠️ GPU not available, using CPU")
     
-    print(f"✅ Model loaded successfully on {device}")
-    print(f"🎯 Model classes: {CLASS_NAMES}")
-    print(f"⚡ Ready for high-speed inference!")
+    return model
 
 def initialize_servo():
     """Initialize servo motor connection via ESP32 with enhanced auto-detection"""
@@ -424,19 +382,36 @@ def check_servo_connection():
         time.sleep(5)  # Check every 5 seconds
 
 def initialize_camera():
-    camera = cv2.VideoCapture(0)  # Try default camera first
-    if not camera.isOpened():
-        for i in range(1, 4):  # Try other camera indices
-            camera = cv2.VideoCapture(i)
-            if camera.isOpened():
-                break
+    """Initialize and configure the webcam with multiple attempts"""
+    print("🎥 Initializing webcam...")
     
-    if camera.isOpened():
-        camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        camera.set(cv2.CAP_PROP_FPS, 30)
+    # Try USB cameras first before falling back to built-in camera
+    camera_order = [1, 2, 3, 0]  # Try external cameras before built-in (index 0)
     
-    return camera
+    for idx in camera_order:
+        print(f"Trying camera index {idx}...")
+        camera = cv2.VideoCapture(idx, cv2.CAP_DSHOW)  # Use DirectShow on Windows
+        
+        if camera.isOpened():
+            print(f"✅ Camera found at index {idx}")
+            # Configure camera settings
+            camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            camera.set(cv2.CAP_PROP_FPS, 30)
+            camera.set(cv2.CAP_PROP_AUTOFOCUS, 1)  # Enable autofocus if available
+            
+            # Verify settings were applied
+            actual_width = camera.get(cv2.CAP_PROP_FRAME_WIDTH)
+            actual_height = camera.get(cv2.CAP_PROP_FRAME_HEIGHT)
+            actual_fps = camera.get(cv2.CAP_PROP_FPS)
+            
+            print(f"📹 Camera initialized successfully:")
+            print(f"   Resolution: {actual_width}x{actual_height}")
+            print(f"   FPS: {actual_fps}")
+            return camera
+    
+    print("❌ No camera found! Please check if your webcam is properly connected.")
+    return None
 
 def draw_predictions(frame, boxes, scores, classes):
     for box, score, cls in zip(boxes, scores, classes):
@@ -520,7 +495,7 @@ def get_fps():
 
 def generate_frames():
     """Generate video frames with optimized CUDA processing"""
-    global cap
+    global cap, model
     
     if cap is None or not cap.isOpened():
         cap = initialize_camera()
@@ -528,14 +503,12 @@ def generate_frames():
             yield b''
             return
     
-    # Pre-allocate GPU memory for frame processing if using CUDA
-    if device == 'cuda':
-        # Pre-allocate tensors for consistent memory usage
-        frame_tensor = torch.zeros((1, 3, INPUT_SIZE, INPUT_SIZE), device=device, dtype=torch.float16)
-        print("🚀 GPU memory pre-allocated for optimal performance")
+    if model is None:
+        model = initialize_model()
     
     frame_count = 0
     inference_times = []
+    performance_stats = {'frame_count': 0, 'total_inference_time': 0.0, 'avg_fps': 0.0}
     
     while True:
         success, frame = cap.read()
@@ -545,105 +518,69 @@ def generate_frames():
         frame_count += 1
         start_time = time.time()
         
-        # Run YOLOv11 inference with advanced CUDA optimization
+        # Run YOLO inference with CUDA optimization
         with torch.no_grad():
-            if device == 'cuda':
-                try:
-                    # Optimized GPU processing pipeline
-                    # Resize frame to model input size first (on CPU for efficiency)
-                    resized_frame = cv2.resize(frame, (INPUT_SIZE, INPUT_SIZE))
-                    
-                    # Convert to tensor and move to GPU efficiently
-                    frame_tensor = torch.from_numpy(resized_frame).permute(2, 0, 1).unsqueeze(0)
-                    frame_tensor = frame_tensor.to(device, dtype=torch.float16, non_blocking=True) / 255.0
-                    
-                    # GPU inference with optimizations
-                    results = model.predict(
-                        frame_tensor,
-                        imgsz=INPUT_SIZE,
-                        conf=CONFIDENCE_THRESHOLD,
-                        iou=IOU_THRESHOLD,
-                        device=device,
-                        verbose=False,
-                        half=True,  # Use FP16 for faster inference
-                        save=False,  # Don't save images
-                        stream=True  # Use streaming for memory efficiency
-                    )[0]
-                    
-                    # Synchronize GPU operations for accurate timing
-                    if frame_count % 10 == 0:  # Sync every 10 frames to avoid overhead
-                        torch.cuda.synchronize()
-                        
-                except Exception as gpu_error:
-                    print(f"⚠️  GPU inference failed: {gpu_error}, falling back to CPU")
-                    # Fallback to CPU inference
-                    results = model.predict(
-                        frame,
-                        imgsz=INPUT_SIZE,
-                        conf=CONFIDENCE_THRESHOLD,
-                        iou=IOU_THRESHOLD,
-                        device='cpu',
-                        verbose=False
-                    )[0]
-            else:
-                # Optimized CPU inference
-                results = model.predict(
-                    frame,
-                    imgsz=INPUT_SIZE,
-                    conf=CONFIDENCE_THRESHOLD,
-                    iou=IOU_THRESHOLD,
-                    device=device,
-                    verbose=False,
-                    save=False
-                )[0]
-            
-            # Process detection results
-            if results.boxes is not None and len(results.boxes) > 0:
-                # Efficiently extract detection data
-                boxes = results.boxes.xyxy.cpu().numpy()
-                scores = results.boxes.conf.cpu().numpy()
-                classes = results.boxes.cls.cpu().numpy()
-                
-                # Scale boxes back to original frame size if we resized
+            try:
                 if device == 'cuda':
-                    # Scale boxes from INPUT_SIZE back to original frame size
+                    # Process on GPU with half precision
+                    img = cv2.resize(frame, (INPUT_SIZE, INPUT_SIZE))
+                    img = torch.from_numpy(img).to(device, dtype=torch.float16, non_blocking=True)
+                    img = img.permute(2, 0, 1).unsqueeze(0) / 255.0
+                    
+                    # GPU inference
+                    results = model(img, verbose=False)[0]
+                    
+                    # Convert results back to numpy arrays
+                    boxes = results.boxes.xyxy.cpu().numpy()
+                    scores = results.boxes.conf.cpu().numpy()
+                    classes = results.boxes.cls.cpu().numpy()
+                    
+                    # Scale boxes back to original frame size
                     h_orig, w_orig = frame.shape[:2]
                     scale_x, scale_y = w_orig / INPUT_SIZE, h_orig / INPUT_SIZE
-                    boxes[:, [0, 2]] *= scale_x  # x coordinates
-                    boxes[:, [1, 3]] *= scale_y  # y coordinates
+                    boxes[:, [0, 2]] *= scale_x
+                    boxes[:, [1, 3]] *= scale_y
+                else:
+                    # CPU inference
+                    results = model(frame, verbose=False)[0]
+                    
+                    # Convert results to numpy
+                    boxes = results.boxes.xyxy.numpy()
+                    scores = results.boxes.conf.numpy()
+                    classes = results.boxes.cls.numpy()
                 
+                # Draw predictions on frame
                 frame = draw_predictions(frame, boxes, scores, classes)
-          # Track inference performance
+                
+                # Sync with GPU every few frames
+                if device == 'cuda' and frame_count % 10 == 0:
+                    torch.cuda.synchronize()
+                
+            except Exception as e:
+                print(f"⚠️ Inference error: {e}")
+                continue
+        
+        # Track performance
         inference_time = time.time() - start_time
-        performance_stats['frame_count'] += 1
-        performance_stats['total_inference_time'] += inference_time
+        inference_times.append(inference_time)
         
-        # Calculate average FPS
-        if performance_stats['frame_count'] > 0:
-            performance_stats['avg_fps'] = performance_stats['frame_count'] / performance_stats['total_inference_time']
+        # Add FPS overlay
+        if len(inference_times) > 30:
+            inference_times.pop(0)
+        avg_fps = 1.0 / (sum(inference_times) / len(inference_times))
+        cv2.putText(frame, f"FPS: {avg_fps:.1f}", (10, 30), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
         
-        # GPU memory management every 20 frames
-        if frame_count % 20 == 0:
-            manage_gpu_memory()
-        
-        # Print performance stats every 30 frames
-        if frame_count % 30 == 0:
-            avg_inference = np.mean(inference_times[-30:]) * 1000 if len(inference_times) >= 30 else inference_time * 1000
-            current_fps = 1.0 / np.mean(inference_times[-30:]) if len(inference_times) >= 30 and np.mean(inference_times[-30:]) > 0 else 0
+        # GPU memory management
+        if device == 'cuda' and frame_count % 20 == 0:
+            torch.cuda.empty_cache()
             
-            if device == 'cuda' and torch.cuda.is_available():
-                gpu_memory = torch.cuda.memory_allocated(0) / 1024**3
-                print(f"🔥 Frame {frame_count}: {current_fps:.1f} FPS | {avg_inference:.1f}ms | GPU: {gpu_memory:.2f}GB")
-            else:
-                print(f"🔥 Frame {frame_count}: {current_fps:.1f} FPS | {avg_inference:.1f}ms | CPU")
-        
-        # Encode frame to JPEG with optimized quality
-        encode_params = [cv2.IMWRITE_JPEG_QUALITY, 85]  # Good balance of quality and speed
-        ret, buffer = cv2.imencode('.jpg', frame, encode_params)
+        # Encode frame as JPEG
+        ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
         if not ret:
             continue
-            
-        # Convert to bytes and yield
+        
+        # Stream frame
         frame_bytes = buffer.tobytes()
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')

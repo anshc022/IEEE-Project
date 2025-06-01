@@ -1,0 +1,53 @@
+{
+  "device_info": {
+    "device": "cpu",
+    "cuda_available": false
+  },
+  "benchmark_results": {
+    "batch_1_size_320": {
+      "avg_time_ms": 2035.4068517684937,
+      "std_time_ms": 1103.535294298902,
+      "fps": 0.49130226673411026,
+      "batch_size": 1,
+      "input_size": 320
+    },
+    "batch_1_size_640": {
+      "avg_time_ms": 7629.81082201004,
+      "std_time_ms": 3198.446971688242,
+      "fps": 0.1310648485694111,
+      "batch_size": 1,
+      "input_size": 640
+    },
+    "batch_1_size_800": {
+      "avg_time_ms": 7656.389665603638,
+      "std_time_ms": 839.446756305324,
+      "fps": 0.13060986230788438,
+      "batch_size": 1,
+      "input_size": 800
+    }
+  },
+  "memory_results": {},
+  "optimization_comparison": {
+    "baseline": {
+      "avg_time_ms": 157.8277826309204,
+      "fps": 6.336020080434734,
+      "speedup": 1.0
+    },
+    "fused": {
+      "avg_time_ms": 155.60320615768433,
+      "fps": 6.426602797545351,
+      "speedup": 1.0142964693862526
+    },
+    "fp16": {
+      "avg_time_ms": 5029.980111122131,
+      "fps": 0.19880794315445344,
+      "speedup": 0.03137741683748146
+    },
+    "compiled": {
+      "avg_time_ms": 6594.982278347015,
+      "fps": 0.15163043019588565,
+      "speedup": 0.02393149457718919
+    }
+  },
+  "timestamp": 1748705769.208616
+}
