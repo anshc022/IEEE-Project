@@ -34,7 +34,7 @@ MODEL_PATH = "corn11.pt"  # Your YOLOv11 model
 CONFIDENCE_THRESHOLD = 0.5
 IOU_THRESHOLD = 0.7
 INPUT_SIZE = 640  # YOLOv11 works better with 640x640
-CLASS_NAMES = []
+CLASS_NAMES = ['corn', 'defective']  # Updated to match Flask implementation
 
 # ESP32 Servo Configuration
 ESP32_PORT = None  # Will be auto-detected
@@ -49,11 +49,29 @@ SERVO_CENTER = "CENTER"  # Center position
 # Seed Analysis Configuration
 seed_analysis_mode = False
 servo_control_enabled = False
+
+# System control variables (Flask-style implementation)
+system_status = {
+    'detection_enabled': True,
+    'servo_enabled': True,
+    'auto_sorting': True,
+    'statistics_enabled': False,  # Controlled by analysis mode
+    'emergency_stop': False
+}
+
 seed_statistics = {
     'good_seeds': 0,
     'bad_seeds': 0,
-    'total_analyzed': 0
+    'total_analyzed': 0,
+    'start_time': None
 }
+
+# Camera Configuration
+FORCE_CAMERA_INDEX = 1  # Set to specific index (e.g., 1, 2, 3) to force external webcam
+# Options based on your camera scan:
+# - Index 0: Laptop Camera (640x480)
+# - Index 1: External Camera (640x480) - RECOMMENDED
+# - Index 2: External Camera (1280x720) - Higher Quality Option
 
 def find_esp32_port():
     """Auto-detect ESP32 COM port"""
@@ -111,35 +129,58 @@ def control_servo_for_seed(seed_type):
             send_servo_command(SERVO_LEFT)   # 90 degrees left for bad seeds
             print(f"🚫 Bad seed detected - Servo moved LEFT")
 
+def update_statistics(seed_type):
+    """Update statistics and control servo based on system status (Flask-style implementation)"""
+    # Only update statistics if analysis mode is enabled
+    if system_status['statistics_enabled']:
+        if seed_type == 'good':
+            seed_statistics['good_seeds'] += 1
+        elif seed_type == 'bad':
+            seed_statistics['bad_seeds'] += 1
+        seed_statistics['total_analyzed'] += 1
+    
+    # Control servo based on seed quality and system status
+    if (servo_control_enabled and 
+        system_status['servo_enabled'] and 
+        system_status['auto_sorting'] and 
+        not system_status['emergency_stop']):
+        
+        if seed_type == 'good':
+            send_servo_command(SERVO_RIGHT)  # Good seeds go RIGHT
+            print(f"🌱 Good seed detected - Servo moved RIGHT")
+        elif seed_type == 'bad':
+            send_servo_command(SERVO_LEFT)   # Bad seeds go LEFT
+            print(f"🚫 Bad seed detected - Servo moved LEFT")
+    else:
+        if seed_type in ['good', 'bad']:
+            print(f"Servo action skipped - servo_enabled: {system_status['servo_enabled']}, auto_sorting: {system_status['auto_sorting']}")
+
 def draw_predictions(frame, boxes, scores, classes, class_names, show_confidence=True):
     for box, score, cls in zip(boxes, scores, classes):
         class_name = class_names[int(cls)] if int(cls) < len(class_names) else f"Class_{int(cls)}"
         
-        # Determine seed quality and color
-        if 'good' in class_name.lower() and score >= 0.7:
-            color = (0, 255, 0)  # Green for good seeds
-            status = "Good Seed"
-            seed_type = "good"
-        elif 'bad' in class_name.lower():
+        # Determine seed quality and color (Flask-style implementation)
+        if 'good' in class_name.lower() or 'corn' in class_name.lower():
+            # For 'corn' class or any class containing 'good'
+            if score >= 0.7:  # High confidence for good classification
+                color = (0, 255, 0)  # Green for good seeds
+                status = "Good Seed"
+                seed_type = "good"
+                update_statistics('good')
+            else:
+                color = (0, 255, 255)  # Yellow for uncertain
+                status = "Uncertain"
+                seed_type = "uncertain"
+        elif 'bad' in class_name.lower() or 'defective' in class_name.lower():
+            # For 'defective' class or any class containing 'bad'
             color = (0, 0, 255)  # Red for bad seeds
             status = "Bad Seed"
             seed_type = "bad"
+            update_statistics('bad')
         else:
             color = (0, 255, 255)  # Yellow for uncertain
             status = "Uncertain"
             seed_type = "uncertain"
-        
-        # Control servo for detected seeds
-        if servo_control_enabled and seed_type in ["good", "bad"]:
-            control_servo_for_seed(seed_type)
-        
-        # Update statistics only in analysis mode
-        if seed_analysis_mode:
-            if seed_type == "good":
-                seed_statistics['good_seeds'] += 1
-            elif seed_type == "bad":
-                seed_statistics['bad_seeds'] += 1
-            seed_statistics['total_analyzed'] += 1
 
         # Draw enhanced bounding box for better visibility
         x1, y1, x2, y2 = map(int, box)
@@ -184,10 +225,8 @@ def draw_predictions(frame, boxes, scores, classes, class_names, show_confidence
         
         # Draw label text
         cv2.putText(frame, label, (x1 + 5, y1 - 8), 
-                   cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
-
-    # Add enhanced analysis overlay with larger text
-    if seed_analysis_mode:
+                   cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)    # Add enhanced analysis overlay with larger text (Flask-style)
+    if seed_analysis_mode and system_status['statistics_enabled']:
         stats_text = [
             f"Good Seeds: {seed_statistics['good_seeds']}",
             f"Bad Seeds: {seed_statistics['bad_seeds']}",
@@ -287,161 +326,111 @@ except Exception as e:
     exit(1)
 
 # Initialize camera
-print("Initializing camera for seed detection...")
-
-def gstreamer_pipeline(
-    sensor_id=0,
-    capture_width=1280,
-    capture_height=720,
-    display_width=640,
-    display_height=480,
-    framerate=30,
-    flip_method=0,
-):
-    """
-    Return GStreamer pipeline for Jetson Nano CSI camera
-    """
-    return (
-        "nvarguscamerasrc sensor-id=%d ! "
-        "video/x-raw(memory:NVMM), "
-        "width=(int)%d, height=(int)%d, "
-        "format=(string)NV12, framerate=(fraction)%d/1 ! "
-        "nvvidconv flip-method=%d ! "
-        "video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! "
-        "videoconvert ! "
-        "video/x-raw, format=(string)BGR ! appsink"
-        % (
-            sensor_id,
-            capture_width,
-            capture_height,
-            framerate,
-            flip_method,
-            display_width,
-            display_height,
-        )
-    )
-
-def try_csi_camera_configurations():
-    """Try different CSI camera configurations to find one that works"""
-    configurations = [
-        # Standard configuration
-        {"sensor_id": 0, "flip_method": 0, "framerate": 15},
-        # Try with different flip methods (can fix green screen issues)
-        {"sensor_id": 0, "flip_method": 2, "framerate": 15},  # 180 degree rotation
-        {"sensor_id": 0, "flip_method": 4, "framerate": 15},  # Horizontal flip
-        {"sensor_id": 0, "flip_method": 6, "framerate": 15},  # Vertical flip
-        # Try different sensor IDs in case multiple cameras
-        {"sensor_id": 1, "flip_method": 0, "framerate": 15},
-        # Try lower framerates for stability
-        {"sensor_id": 0, "flip_method": 0, "framerate": 10},
-    ]
-    
-    for i, config in enumerate(configurations):
-        try:
-            print(f"Trying CSI configuration {i+1}: {config}")
-            gst_str = gstreamer_pipeline(
-                sensor_id=config["sensor_id"],
-                capture_width=1280,
-                capture_height=720,
-                display_width=640,
-                display_height=480,
-                framerate=config["framerate"],
-                flip_method=config["flip_method"]
-            )
-            cap = cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
-            
-            if cap.isOpened():
-                # Test reading a frame
-                ret, test_frame = cap.read()
-                if ret and test_frame is not None and test_frame.size > 0:
-                    # Check if this configuration fixes green screen
-                    mean_channels = np.mean(test_frame, axis=(0, 1))
-                    green_dominance = mean_channels[1] / (mean_channels[0] + mean_channels[2] + 1e-6)
-                    
-                    print(f"✅ Configuration {i+1} works - Green dominance: {green_dominance:.2f}")
-                    
-                    if green_dominance < 1.5:  # Not too green-dominant
-                        print(f"🎯 Configuration {i+1} looks good! Using this one.")
-                        return cap
-                    else:
-                        print(f"⚠️ Configuration {i+1} still has green screen issue")
-                        cap.release()
-                else:
-                    cap.release()
-            
-        except Exception as e:
-            print(f"Configuration {i+1} failed: {e}")
-    
-    return None
+print("Initializing USB webcam for seed detection...")
 
 def initialize_camera():
-    """Initialize camera with fallback options for different platforms"""
+    """Initialize external USB webcam with optimal settings (prioritizes external cameras over laptop built-in)"""
     
-    # Try CSI camera first (Jetson Nano) with multiple configurations
-    try:
-        print("Attempting to initialize CSI camera with multiple configurations...")
-        cap = try_csi_camera_configurations()
-        if cap is not None:
-            print("✅ CSI camera initialized successfully with optimal configuration")
-            return cap
-        else:
-            print("⚠️ All CSI camera configurations failed")
-    except Exception as e:
-        print(f"⚠️ CSI camera initialization failed: {e}")
-      # Fallback to USB camera
-    print("Falling back to USB camera...")
-    for camera_index in [0, 1, 2, 3]:
+    print("Searching for external USB webcam...")
+    
+    # Use forced camera index if specified
+    if FORCE_CAMERA_INDEX is not None:
+        print(f"Using forced camera index: {FORCE_CAMERA_INDEX}")
+        camera_indices = [FORCE_CAMERA_INDEX]
+    else:        # Try external webcam indices first (usually 1, 2, 3+), then fallback to laptop camera (0)
+        camera_indices = [1, 2, 3, 4, 5, 0]  # Prioritize external cameras
+    
+    for camera_index in camera_indices:
         try:
-            cap = cv2.VideoCapture(camera_index)
-            if cap.isOpened():
-                # Set reasonable resolution first
+            print(f"Trying camera at index {camera_index}...")
+            cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)  # Use DirectShow on Windows
+            
+            if cap.isOpened():                # Set optimal resolution and FPS for better performance
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                cap.set(cv2.CAP_PROP_FPS, 15)
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                  # Try to set additional properties for better compatibility
+                cap.set(cv2.CAP_PROP_FPS, 30)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer for lower latency
+                cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)  # Enable autofocus if available
+                
+                # Try to set MJPEG format for better performance
                 try:
                     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc('M', 'J', 'P', 'G'))
                 except:
                     pass  # Skip if not supported
                 
+                # Additional settings for better quality
+                try:
+                    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)  # Manual exposure
+                    cap.set(cv2.CAP_PROP_BRIGHTNESS, 0.5)
+                    cap.set(cv2.CAP_PROP_CONTRAST, 0.5)
+                    cap.set(cv2.CAP_PROP_SATURATION, 0.5)
+                except:
+                    pass  # Skip if not supported
+                
                 # Test reading a frame
                 ret, test_frame = cap.read()
-                if ret and test_frame is not None:
-                    # Check for green screen in USB camera too
-                    mean_channels = np.mean(test_frame, axis=(0, 1))
-                    green_dominance = mean_channels[1] / (mean_channels[0] + mean_channels[2] + 1e-6)
+                if ret and test_frame is not None and test_frame.size > 0:
+                    camera_type = "External USB webcam" if camera_index != 0 else "Laptop built-in camera"
+                    print(f"✅ {camera_type} at index {camera_index} initialized successfully")
+                    print(f"   Resolution: {test_frame.shape[1]}x{test_frame.shape[0]}")
+                    print(f"   FPS: {cap.get(cv2.CAP_PROP_FPS)}")
                     
-                    print(f"✅ USB camera {camera_index} - Frame: {test_frame.shape}, Green dominance: {green_dominance:.2f}")
-                    
-                    # If green screen is detected, try to fix it
-                    if green_dominance > 2.0:
-                        print(f"⚠️ Green screen detected in USB camera {camera_index}, trying to fix...")
-                        # Try different capture settings
-                        cap.set(cv2.CAP_PROP_CONVERT_RGB, 1)
-                        cap.set(cv2.CAP_PROP_FORMAT, -1)  # Auto format
-                        
-                        # Test again
-                        ret, test_frame = cap.read()
-                        if ret and test_frame is not None:
-                            mean_channels = np.mean(test_frame, axis=(0, 1))
-                            green_dominance = mean_channels[1] / (mean_channels[0] + mean_channels[2] + 1e-6)
-                            print(f"After fix - Green dominance: {green_dominance:.2f}")
+                    # If this is index 0 (laptop camera), warn user
+                    if camera_index == 0 and FORCE_CAMERA_INDEX is None:
+                        print("⚠️  WARNING: Using laptop built-in camera. Make sure your external webcam is connected.")
+                        print("   External webcams are usually detected at higher indices (1, 2, 3+)")
+                        print("   Use list_available_cameras() to see all cameras or force_external_camera(index) to force specific camera")
                     
                     return cap
                 else:
+                    print(f"❌ Camera {camera_index} failed to read frame")
                     cap.release()
+            else:
+                print(f"❌ Camera {camera_index} could not be opened")
+                
         except Exception as e:
-            print(f"USB camera {camera_index} failed: {e}")
+            print(f"❌ Camera {camera_index} error: {e}")
     
     return None
 
-# Initialize camera with proper CSI support
+def force_external_camera(camera_index):
+    """Force the use of a specific camera index (useful for external webcams)"""
+    global FORCE_CAMERA_INDEX
+    FORCE_CAMERA_INDEX = camera_index
+    print(f"Forcing camera index {camera_index} for external webcam")
+
+def list_available_cameras():
+    """List all available cameras to help identify external webcam"""
+    print("Scanning for available cameras...")
+    available_cameras = []
+    
+    for i in range(10):  # Check first 10 indices
+        try:
+            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)  # Use DirectShow on Windows
+            if cap.isOpened():
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    available_cameras.append(i)
+                    print(f"✅ Camera {i}: Available - Resolution: {frame.shape[1]}x{frame.shape[0]}")
+                cap.release()
+            else:
+                print(f"❌ Camera {i}: Not available")
+        except:
+            print(f"❌ Camera {i}: Error accessing")
+    
+    print(f"\nFound {len(available_cameras)} working cameras: {available_cameras}")
+    if len(available_cameras) > 1:
+        print("💡 Tip: Index 0 is usually laptop camera, higher indices are external webcams")
+        print("💡 Use force_external_camera(index) to force a specific camera")
+    
+    return available_cameras
+
+# Initialize USB camera
 cap = initialize_camera()
 
 if cap is None:
-    print("❌ Error: No working camera found!")
-    print("Make sure your CSI camera is properly connected or try a USB camera")
+    print("❌ Error: No working USB camera found!")
+    print("Make sure your USB camera is properly connected")
     exit(1)
 
 print("Camera initialized successfully")
@@ -484,16 +473,10 @@ if test_ret and test_frame is not None:
     # Save a test frame for debugging
     cv2.imwrite("camera_test_frame.jpg", test_frame)
     print("📸 Test frame saved as 'camera_test_frame.jpg' for inspection")
-    
-    # Check for green screen issue
+      # Check for normal color distribution
     mean_channels = np.mean(test_frame, axis=(0, 1))
     print(f"Channel means (B,G,R): {mean_channels}")
-    
-    if mean_channels[1] > mean_channels[0] * 2 and mean_channels[1] > mean_channels[2] * 2:
-        print("⚠️ WARNING: Green screen detected! This might be a CSI camera color issue.")
-        print("💡 Try adjusting the flip_method parameter or check camera connections.")
-    else:
-        print("✅ Camera colors look normal")
+    print("✅ Camera colors look normal")
 else:
     print("❌ Camera test failed!")
     exit(1)
@@ -515,8 +498,7 @@ try:
             if not ret:
                 print("Error: Could not read frame from camera")
                 break
-            
-            # Validate frame and fix potential color issues
+              # Validate frame
             if frame is None:
                 print("Warning: Received None frame")
                 continue
@@ -536,40 +518,9 @@ try:
                 print(f"Frame {frame_count}: Shape={frame.shape}, dtype={frame.dtype}, "
                       f"min={frame.min()}, max={frame.max()}")
             
-            # Fix potential color space issues
-            # Some CSI cameras might output in different color formats
+            # Ensure frame is in proper format
             if frame.dtype != np.uint8:
                 frame = frame.astype(np.uint8)
-              # Ensure frame is in BGR format (OpenCV default)
-            # Some cameras might need color space conversion
-            if frame_count == 0:
-                # Test if the image looks like it might be in wrong color space
-                mean_values = np.mean(frame, axis=(0, 1))
-                print(f"First frame channel means (BGR): {mean_values}")
-                
-                # If green channel is significantly higher, might need conversion
-                if mean_values[1] > mean_values[0] * 1.5 and mean_values[1] > mean_values[2] * 1.5:
-                    print("⚠️ Detected potential color space issue - applying correction")
-                    # Try different color space conversions
-                    try:
-                        # Check if it's an all-green frame (common CSI camera issue)
-                        if mean_values[0] == 0 and mean_values[2] == 0 and mean_values[1] > 0:
-                            print("🔧 Detected all-green frame - attempting to fix...")
-                            # Create a placeholder grayscale frame using the green channel
-                            gray_frame = frame[:,:,1]  # Use green channel as grayscale
-                            frame = cv2.cvtColor(gray_frame, cv2.COLOR_GRAY2BGR)
-                            print("✅ Converted green-only frame to grayscale")
-                        else:
-                            # Try YUV conversion
-                            frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR)
-                            print("Applied YUV to BGR conversion")
-                    except:
-                        try:
-                            # Alternative: swap channels if BGR is actually RGB
-                            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                            print("Applied RGB to BGR conversion")
-                        except:
-                            print("Could not apply color conversion, using original frame")
                 
             inference_start = time.time()
               # YOLOv11 inference with CUDA optimization
@@ -658,18 +609,19 @@ try:
             save_filename = f"seed_detection_{save_counter:04d}.jpg"
             cv2.imwrite(save_filename, frame)
             print(f"Frame saved as {save_filename}")
-            save_counter += 1
-        elif key == ord('c'):
+            save_counter += 1        elif key == ord('c'):
             show_confidence = not show_confidence
             print(f"Confidence scores {'shown' if show_confidence else 'hidden'}")
         elif key == ord('a'):
             seed_analysis_mode = not seed_analysis_mode
+            system_status['statistics_enabled'] = seed_analysis_mode  # Sync with system status
             print(f"Seed analysis mode {'enabled' if seed_analysis_mode else 'disabled'}")
             if seed_analysis_mode:
                 print("\nSeed Analysis Statistics Reset")
                 seed_statistics['good_seeds'] = 0
                 seed_statistics['bad_seeds'] = 0
                 seed_statistics['total_analyzed'] = 0
+                seed_statistics['start_time'] = time.time()  # Track analysis start time
 
 except KeyboardInterrupt:
     print("\nStopping YOLOv11 seed detection...")

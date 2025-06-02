@@ -11,6 +11,8 @@ from datetime import datetime
 import threading
 import atexit
 import gc
+import atexit
+import gc
 
 
 app = Flask(__name__)
@@ -38,13 +40,13 @@ def cleanup_resources():
 atexit.register(cleanup_resources)
 
 # Configuration
-MODEL_PATH = "corn11.pt"
-CONFIDENCE_THRESHOLD = 0.5
+MODEL_PATH = "corn.pt"  # Use the better performing model
+CONFIDENCE_THRESHOLD = 0.3  # Lower threshold for better detection
 IOU_THRESHOLD = 0.7
 INPUT_SIZE = 640
 
-# Constants
-CLASS_NAMES = ['corn', 'defective']  # Your class names
+# Constants - Will be updated from model
+CLASS_NAMES = ['Bad-Seed', 'Good-Seed']  # Default, will be overridden by model
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Global variables
@@ -189,13 +191,51 @@ servo_status = {
 
 def initialize_model():
     """Initialize the YOLO model with GPU optimizations"""
-    global model
+    global model, CLASS_NAMES
     
     if model is not None:
         return model
         
     print("🚀 Initializing YOLO model...")
-    model = YOLO('corn11.pt')
+    model = YOLO(MODEL_PATH)
+    
+    # Get class names from the model (more accurate than hardcoded)
+    if hasattr(model, 'names') and model.names:
+        CLASS_NAMES = list(model.names.values())
+        print(f"✅ Class names loaded from model: {CLASS_NAMES}")
+    else:
+        print(f"⚠️  Using default class names: {CLASS_NAMES}")
+    
+    if device == 'cuda' and torch.cuda.is_available():
+        print(f"🎯 Using GPU acceleration")
+        
+        # Move model to GPU and optimize
+        model.to(device)
+        
+        # Optimize for inference
+        try:
+            model.fuse()  # Fuse Conv2d + BatchNorm layers for faster inference
+            print("✅ Model layers fused for faster inference")
+        except:
+            pass
+        
+        # Enable CUDA optimizations
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
+        
+        # Warm up the model
+        print("🔥 Warming up model...")
+        dummy_input = torch.zeros((1, 3, INPUT_SIZE, INPUT_SIZE), device=device, dtype=torch.float16)
+        with torch.no_grad():
+            for _ in range(3):
+                _ = model(dummy_input, verbose=False)
+        print("✅ Model ready for inference")
+    else:
+        print("⚠️ GPU not available, using CPU")
+        # CPU optimizations
+        torch.set_num_threads(4)  # Optimize CPU threads
+    
+    return model
     
     if device == 'cuda' and torch.cuda.is_available():
         print(f"🎯 Using GPU acceleration")
@@ -414,45 +454,147 @@ def initialize_camera():
     return None
 
 def draw_predictions(frame, boxes, scores, classes):
+    """Enhanced prediction drawing with better confidence handling and visual feedback"""
+    # Collect all detections for smart processing
+    detections = []
+    best_detection = None
+    best_confidence = 0.0
+    
     for box, score, cls in zip(boxes, scores, classes):
         class_name = CLASS_NAMES[int(cls)] if int(cls) < len(CLASS_NAMES) else f"Class_{int(cls)}"
         
-        # Determine seed quality and color
-        if 'good' in class_name.lower() and score >= 0.7:
-            color = (0, 255, 0)  # Green for good seeds
-            status = "Good Seed"
-            update_statistics('good')
-        elif 'bad' in class_name.lower():
-            color = (0, 0, 255)  # Red for bad seeds
-            status = "Bad Seed"
-            update_statistics('bad')
+        # Determine seed quality and color - Fixed logic for corn.pt model
+        # The corn.pt model has classes: ['Bad-Seed', 'Good-Seed']
+        # Class 0 = Bad-Seed, Class 1 = Good-Seed
+        if 'good-seed' in class_name.lower() or 'good' in class_name.lower():
+            # For Good-Seed class
+            if score >= 0.7:  # High confidence for good classification
+                color = (0, 255, 0)  # Green for good seeds
+                status = "Good Seed"
+                seed_type = "good"
+            elif score >= 0.5:  # Medium confidence
+                color = (0, 200, 0)  # Darker green for medium confidence
+                status = "Good Seed (Med)"
+                seed_type = "good"
+            else:
+                color = (0, 255, 255)  # Yellow for uncertain
+                status = "Uncertain"
+                seed_type = "uncertain"
+        elif 'bad-seed' in class_name.lower() or 'bad' in class_name.lower():
+            # For Bad-Seed class
+            if score >= 0.5:  # Any reasonable confidence for bad classification
+                color = (0, 0, 255)  # Red for bad seeds
+                status = "Bad Seed"
+                seed_type = "bad"
+            else:
+                color = (0, 100, 255)  # Orange for uncertain bad
+                status = "Bad Seed (?)"
+                seed_type = "bad"
         else:
             color = (0, 255, 255)  # Yellow for uncertain
-            status = "Uncertain"
+            status = "Unknown"
+            seed_type = "uncertain"
+        
+        # Store detection info
+        detection = {
+            'box': box,
+            'score': score,
+            'class': cls,
+            'class_name': class_name,
+            'status': status,
+            'seed_type': seed_type,
+            'color': color
+        }
+        detections.append(detection)
+          # Track the highest confidence detection for action priority
+        if score > best_confidence and seed_type in ['good', 'bad']:
+            best_confidence = score
+            best_detection = detection
 
+    # Draw all detections on frame
+    for detection in detections:
+        box = detection['box']
+        score = detection['score']
+        status = detection['status']
+        color = detection['color']
+        
+        # Enhanced bounding box drawing (from app.py)
         x1, y1, x2, y2 = map(int, box)
         
-        # Draw box with enhanced visibility
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        # Draw thicker main bounding box
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 4)
         
-        # Draw label with confidence
-        label = f"{status}: {score:.2f}" if show_confidence else status
-        text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
-        cv2.rectangle(frame, (x1, y1 - 20), (x1 + text_size[0], y1), color, -1)
-        cv2.putText(frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-    
-    # Add statistics overlay
+        # Add inner highlight for better contrast
+        cv2.rectangle(frame, (x1+2, y1+2), (x2-2, y2-2), (255, 255, 255), 1)
+        
+        # Draw corner markers for extra visibility
+        corner_size = 8
+        cv2.line(frame, (x1, y1), (x1 + corner_size, y1), color, 3)
+        cv2.line(frame, (x1, y1), (x1, y1 + corner_size), color, 3)
+        cv2.line(frame, (x2, y1), (x2 - corner_size, y1), color, 3)
+        cv2.line(frame, (x2, y1), (x2, y1 + corner_size), color, 3)
+        cv2.line(frame, (x1, y2), (x1 + corner_size, y2), color, 3)
+        cv2.line(frame, (x1, y2), (x1, y2 - corner_size), color, 3)
+        cv2.line(frame, (x2, y2), (x2 - corner_size, y2), color, 3)
+        cv2.line(frame, (x2, y2), (x2, y2 - corner_size), color, 3)
+        
+        # Add center point for precise location
+        center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2
+        cv2.circle(frame, (center_x, center_y), 3, color, -1)
+        cv2.circle(frame, (center_x, center_y), 6, (255, 255, 255), 1)
+        
+        # Enhanced label with confidence percentage
+        if show_confidence:
+            label = f"{status}: {score*100:.1f}%"
+        else:
+            label = status
+            
+        font_scale = 0.7
+        font_thickness = 2
+        label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)[0]
+        
+        # Draw label background with padding
+        label_bg_x1 = x1
+        label_bg_y1 = y1 - label_size[1] - 15
+        label_bg_x2 = x1 + label_size[0] + 10
+        label_bg_y2 = y1
+        
+        # Draw label background with border
+        cv2.rectangle(frame, (label_bg_x1, label_bg_y1), (label_bg_x2, label_bg_y2), color, -1)
+        cv2.rectangle(frame, (label_bg_x1, label_bg_y1), (label_bg_x2, label_bg_y2), (255, 255, 255), 1)
+        
+        # Draw label text
+        cv2.putText(frame, label, (x1 + 5, y1 - 8), 
+                   cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
+      # Process only the best detection for statistics and servo control
+    if best_detection and best_detection['seed_type'] in ['good', 'bad']:
+        update_statistics(best_detection['seed_type'])
+        
+        # Add visual indicator for the selected action
+        best_box = best_detection['box']
+        x1, y1, x2, y2 = map(int, best_box)
+        
+        # Draw a special border around the selected detection
+        cv2.rectangle(frame, (x1-3, y1-3), (x2+3, y2+3), (255, 255, 0), 3)  # Yellow border
+      
+    # Add enhanced statistics overlay
     stats_text = [
-        f"FPS: {get_fps():.1f}",
+        f"Model: {MODEL_PATH}",
+        f"Classes: {', '.join(CLASS_NAMES)}",
         f"Good Seeds: {seed_statistics['good_seeds']}",
         f"Bad Seeds: {seed_statistics['bad_seeds']}",
         f"Total: {seed_statistics['total_analyzed']}"
     ]
     
-    y = 30
+    # Draw stats background for better visibility
+    bg_height = len(stats_text) * 22 + 10
+    cv2.rectangle(frame, (5, 5), (350, bg_height), (0, 0, 0), -1)
+    cv2.rectangle(frame, (5, 5), (350, bg_height), (255, 255, 255), 1)
+    
+    y = 22
     for text in stats_text:
-        cv2.putText(frame, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        y += 25
+        cv2.putText(frame, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        y += 22
     
     return frame
 
@@ -517,40 +659,39 @@ def generate_frames():
         
         frame_count += 1
         start_time = time.time()
-        
-        # Run YOLO inference with CUDA optimization
+          # Run YOLO inference with CUDA optimization
         with torch.no_grad():
             try:
-                if device == 'cuda':
-                    # Process on GPU with half precision
-                    img = cv2.resize(frame, (INPUT_SIZE, INPUT_SIZE))
-                    img = torch.from_numpy(img).to(device, dtype=torch.float16, non_blocking=True)
-                    img = img.permute(2, 0, 1).unsqueeze(0) / 255.0
-                    
-                    # GPU inference
-                    results = model(img, verbose=False)[0]
-                    
-                    # Convert results back to numpy arrays
-                    boxes = results.boxes.xyxy.cpu().numpy()
-                    scores = results.boxes.conf.cpu().numpy()
-                    classes = results.boxes.cls.cpu().numpy()
-                    
-                    # Scale boxes back to original frame size
-                    h_orig, w_orig = frame.shape[:2]
-                    scale_x, scale_y = w_orig / INPUT_SIZE, h_orig / INPUT_SIZE
-                    boxes[:, [0, 2]] *= scale_x
-                    boxes[:, [1, 3]] *= scale_y
-                else:
-                    # CPU inference
-                    results = model(frame, verbose=False)[0]
-                    
-                    # Convert results to numpy
-                    boxes = results.boxes.xyxy.numpy()
-                    scores = results.boxes.conf.numpy()
-                    classes = results.boxes.cls.numpy()
+                # Run inference directly on the frame
+                results = model(frame, conf=CONFIDENCE_THRESHOLD, iou=IOU_THRESHOLD, verbose=False)
                 
-                # Draw predictions on frame
-                frame = draw_predictions(frame, boxes, scores, classes)
+                # Extract detection data from YOLOv11 results (similar to app.py)
+                if results and len(results) > 0 and hasattr(results[0], "boxes") and results[0].boxes is not None:
+                    boxes_tensor = results[0].boxes.xyxy
+                    scores_tensor = results[0].boxes.conf
+                    classes_tensor = results[0].boxes.cls
+                    
+                    # Convert to numpy arrays safely
+                    if hasattr(boxes_tensor, 'cpu'):
+                        boxes = boxes_tensor.cpu().numpy()
+                        scores = scores_tensor.cpu().numpy()
+                        classes = classes_tensor.cpu().numpy()
+                    else:
+                        boxes = np.array(boxes_tensor)
+                        scores = np.array(scores_tensor)
+                        classes = np.array(classes_tensor)
+                    
+                    # Filter by confidence threshold (additional filtering)
+                    confidence_mask = scores >= CONFIDENCE_THRESHOLD
+                    boxes = boxes[confidence_mask]
+                    scores = scores[confidence_mask]
+                    classes = classes[confidence_mask]
+                    
+                    # Draw predictions on frame
+                    frame = draw_predictions(frame, boxes, scores, classes)
+                    num_objects = len(boxes)
+                else:
+                    num_objects = 0
                 
                 # Sync with GPU every few frames
                 if device == 'cuda' and frame_count % 10 == 0:
