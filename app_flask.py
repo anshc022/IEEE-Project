@@ -11,8 +11,6 @@ from datetime import datetime
 import threading
 import atexit
 import gc
-import atexit
-import gc
 
 
 app = Flask(__name__)
@@ -44,14 +42,21 @@ MODEL_PATH = "corn.pt"  # Use the better performing model
 CONFIDENCE_THRESHOLD = 0.3  # Lower threshold for better detection
 IOU_THRESHOLD = 0.7
 INPUT_SIZE = 640
+TARGET_FPS = 15  # Target FPS for web streaming (reasonable for real-time)
 
 # Constants - Will be updated from model
 CLASS_NAMES = ['Bad-Seed', 'Good-Seed']  # Default, will be overridden by model
+
+# Duplicate detection suppression settings
+DETECTION_MEMORY_SECONDS = 0.8  # How long to remember recent detections (seconds)
+DETECTION_DISTANCE_THRESHOLD = 60  # Maximum center distance (pixels) to consider a duplicate
+DETECTION_IOU_THRESHOLD = 0.4  # Minimum IoU overlap to treat detections as the same object
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Global variables
 model = None
 cap = None
+servo_serial = None
 
 # Enhanced CUDA detection and configuration
 def setup_device():
@@ -174,12 +179,15 @@ seed_statistics = {
     'good_seeds': 0,
     'bad_seeds': 0,
     'total_analyzed': 0,
-    'start_time': None
+    'start_time': None,
+    'duplicates_filtered': 0
 }
 show_confidence = True
 
+# Track recent detections to avoid duplicate counts across frames
+recent_detections = []
+
 # Servo control variables
-servo_serial = None
 servo_status = {
     'connected': False,
     'port': None,
@@ -236,28 +244,6 @@ def initialize_model():
         torch.set_num_threads(4)  # Optimize CPU threads
     
     return model
-    
-    if device == 'cuda' and torch.cuda.is_available():
-        print(f"🎯 Using GPU acceleration")
-        
-        # Move model to GPU and optimize
-        model.to(device)
-        
-        # Enable CUDA optimizations
-        torch.backends.cudnn.benchmark = True
-        torch.backends.cudnn.deterministic = False
-        
-        # Warm up the model
-        print("🔥 Warming up model...")
-        dummy_input = torch.zeros((1, 3, INPUT_SIZE, INPUT_SIZE), device=device, dtype=torch.float16)
-        with torch.no_grad():
-            for _ in range(3):
-                _ = model(dummy_input, verbose=False)
-        print("✅ Model ready for inference")
-    else:
-        print("⚠️ GPU not available, using CPU")
-    
-    return model
 
 def initialize_servo():
     """Initialize servo motor connection via ESP32 with enhanced auto-detection"""
@@ -306,31 +292,64 @@ def initialize_servo():
                 servo_serial.reset_input_buffer()
                 servo_serial.reset_output_buffer()
                 
-                # Test connection with multiple attempts
-                for attempt in range(3):
-                    servo_serial.write(b'STATUS\n')
-                    time.sleep(0.5)
+                # Test connection with better protocol
+                print("Testing ESP32 communication...")
+                
+                # Clear any existing data
+                servo_serial.reset_input_buffer()
+                servo_serial.reset_output_buffer()
+                
+                # Test with simple commands that ESP32 should respond to
+                test_commands = [b'TEST\n', b'GOOD\n', b'BAD\n']
+                connection_verified = False
+                
+                for cmd in test_commands:
+                    try:
+                        print(f"Sending test command: {cmd.decode().strip()}")
+                        servo_serial.write(cmd)
+                        time.sleep(0.8)  # Give ESP32 time to process and respond
+                        
+                        # Check for any response or successful command execution
+                        response_data = b''
+                        start_time = time.time()
+                        while time.time() - start_time < 1.0:  # Wait up to 1 second
+                            if servo_serial.in_waiting > 0:
+                                response_data += servo_serial.read(servo_serial.in_waiting)
+                            time.sleep(0.1)
+                        
+                        if response_data:
+                            response = response_data.decode('utf-8', errors='ignore').strip()
+                            print(f"ESP32 Response: {response}")
+                            connection_verified = True
+                            break
+                        else:
+                            print("No response received")
+                            
+                    except Exception as e:
+                        print(f"Command test error: {e}")
+                        continue
+                
+                if connection_verified:
+                    servo_status['connected'] = True
+                    servo_status['port'] = esp32_port
+                    servo_status['last_response_time'] = time.time()
+                    print(f"✅ Servo motor connected and verified on {esp32_port}")
                     
-                    if servo_serial.in_waiting > 0:
-                        response = servo_serial.readline().decode().strip()
-                        if response:
-                            servo_status['connected'] = True
-                            servo_status['port'] = esp32_port
-                            servo_status['last_response_time'] = time.time()
-                            print(f"✅ Servo motor connected on {esp32_port}")
-                            print(f"   ESP32 Response: {response}")
-                            return True
-                
-                # If no response, try a simple command
-                servo_serial.write(b'CENTER\n')
-                time.sleep(1)
-                
-                # Assume connection is good if no exception occurred
-                servo_status['connected'] = True
-                servo_status['port'] = esp32_port
-                servo_status['last_response_time'] = time.time()
-                print(f"✅ Servo motor connected on {esp32_port} (no response test)")
-                return True
+                    # Send REST command to initialize position
+                    try:
+                        servo_serial.write(b'REST\n')
+                        time.sleep(0.5)
+                    except:
+                        pass
+                        
+                    return True
+                else:
+                    # Connection without verification - assume it works
+                    servo_status['connected'] = True
+                    servo_status['port'] = esp32_port
+                    servo_status['last_response_time'] = time.time()
+                    print(f"✅ Servo motor connected on {esp32_port} (assumed working)")
+                    return True
                 
             except serial.SerialException as e:
                 print(f"Failed to connect to {esp32_port}: {e}")
@@ -356,70 +375,128 @@ def initialize_servo():
         return False
 
 def send_servo_command(command):
-    """Send command to servo motor with connection recovery"""
+    """Send command to servo motor with enhanced error handling"""
     global servo_serial, servo_status
     
     if not servo_status['connected']:
-        return False
+        print("❌ Servo not connected, attempting reconnection...")
+        if not initialize_servo():
+            return False
     
-    try:
-        # Check if serial connection is still valid
-        if not servo_serial or not servo_serial.is_open:
-            print("🔄 Serial connection lost, attempting to reconnect...")
-            if not initialize_servo():
-                return False
-        
-        # Send command
-        servo_serial.write(f"{command}\n".encode())
-        time.sleep(0.1)  # Small delay for command processing
-        
-        # Try to read response (optional, don't fail if no response)
-        response = ""
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
-            if servo_serial.in_waiting > 0:
-                response = servo_serial.readline().decode().strip()
-        except:
-            pass  # Ignore read errors
-        
-        servo_status['last_command'] = command
-        servo_status['last_response_time'] = time.time()
-        
-        # Count sorting operations (LEFT for bad seeds, RIGHT for good seeds)
-        if command in ['LEFT', 'RIGHT']:
-            servo_status['total_sorts'] += 1
-        
-        print(f"✅ Servo command sent: {command}" + (f" | Response: {response}" if response else ""))
-        return True
-        
-    except Exception as e:
-        print(f"❌ Servo command error: {e}")
-        servo_status['connected'] = False
-        # Try to close and reopen connection
-        try:
-            if servo_serial:
-                servo_serial.close()
-        except:
-            pass
-        servo_serial = None
-        return False
+            # Check if serial connection is still valid
+            if not servo_serial or not servo_serial.is_open:
+                print(f"🔄 Serial connection lost (attempt {attempt + 1}), reconnecting...")
+                if not initialize_servo():
+                    continue
+            
+            # Clear buffers before sending command
+            servo_serial.reset_input_buffer()
+            servo_serial.reset_output_buffer()
+            
+            # Send command with proper formatting
+            command_bytes = f"{command}\n".encode('utf-8')
+            servo_serial.write(command_bytes)
+            servo_serial.flush()  # Ensure data is sent immediately
+            
+            time.sleep(0.2)  # Give ESP32 time to process
+            
+            # Try to read response with timeout
+            response = ""
+            start_time = time.time()
+            response_data = b''
+            
+            while time.time() - start_time < 1.0:  # 1 second timeout
+                if servo_serial.in_waiting > 0:
+                    try:
+                        response_data += servo_serial.read(servo_serial.in_waiting)
+                    except:
+                        break
+                time.sleep(0.05)
+            
+            if response_data:
+                response = response_data.decode('utf-8', errors='ignore').strip()
+            
+            # Update status regardless of response
+            servo_status['last_command'] = command
+            servo_status['last_response_time'] = time.time()
+            servo_status['connected'] = True
+            
+            # Count sorting operations
+            if command in ['LEFT', 'RIGHT']:
+                servo_status['total_sorts'] += 1
+            
+            print(f"✅ Servo command sent: {command}" + (f" | Response: {response}" if response else " | No response"))
+            return True
+            
+        except serial.SerialException as e:
+            print(f"❌ Serial error (attempt {attempt + 1}): {e}")
+            servo_status['connected'] = False
+            
+            # Try to close and reopen connection
+            try:
+                if servo_serial:
+                    servo_serial.close()
+            except:
+                pass
+            servo_serial = None
+            
+            if attempt < max_retries - 1:
+                time.sleep(1)  # Wait before retry
+                continue
+                
+        except Exception as e:
+            print(f"❌ Unexpected servo error (attempt {attempt + 1}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(0.5)
+                continue
+    
+    # All attempts failed
+    servo_status['connected'] = False
+    print(f"❌ Failed to send servo command '{command}' after {max_retries} attempts")
+    return False
 
 def check_servo_connection():
-    """Periodically check servo connection"""
+    """Periodically check servo connection with improved monitoring"""
     while True:
         if servo_status['connected'] and servo_serial:
             try:
-                servo_serial.write(b'PING\n')
-                response = servo_serial.readline().decode().strip()
-                if not response:
-                    servo_status['connected'] = False
-                    print("Servo connection lost")
-                else:
-                    servo_status['last_response_time'] = time.time()
-            except:
-                servo_status['connected'] = False
-                print("Servo connection error")
+                # Only check if we haven't sent a command recently
+                time_since_last_command = time.time() - servo_status.get('last_response_time', 0)
+                
+                if time_since_last_command > 10:  # Only ping if idle for 10+ seconds
+                    # Use a simple command instead of PING
+                    if servo_serial and servo_serial.is_open:
+                        servo_serial.reset_input_buffer()
+                        servo_serial.write(b'REST\n')
+                        time.sleep(0.5)
+                        
+                        # Don't fail if no response - ESP32 might be busy
+                        if servo_serial.in_waiting > 0:
+                            try:
+                                response = servo_serial.read(servo_serial.in_waiting()).decode('utf-8', errors='ignore')
+                                servo_status['last_response_time'] = time.time()
+                            except:
+                                pass
+                    else:
+                        servo_status['connected'] = False
+                        print("🔄 Servo connection lost - port closed")
+                        
+            except Exception as e:
+                print(f"⚠️ Servo connection check error: {e}")
+                # Don't immediately mark as disconnected - might be temporary
+        else:
+            # Try to reconnect if disconnected
+            if not servo_status['connected']:
+                print("🔄 Attempting servo reconnection...")
+                try:
+                    initialize_servo()
+                except:
+                    pass
         
-        time.sleep(5)  # Check every 5 seconds
+        time.sleep(8)  # Check every 8 seconds
 
 def initialize_camera():
     """Initialize and configure the webcam with multiple attempts"""
@@ -453,12 +530,94 @@ def initialize_camera():
     print("❌ No camera found! Please check if your webcam is properly connected.")
     return None
 
+def calculate_iou(box_a, box_b):
+    """Calculate Intersection over Union (IoU) between two bounding boxes."""
+    x1 = max(box_a[0], box_b[0])
+    y1 = max(box_a[1], box_b[1])
+    x2 = min(box_a[2], box_b[2])
+    y2 = min(box_a[3], box_b[3])
+
+    inter_width = max(0.0, x2 - x1)
+    inter_height = max(0.0, y2 - y1)
+    inter_area = inter_width * inter_height
+
+    if inter_area <= 0.0:
+        return 0.0
+
+    area_a = max(0.0, box_a[2] - box_a[0]) * max(0.0, box_a[3] - box_a[1])
+    area_b = max(0.0, box_b[2] - box_b[0]) * max(0.0, box_b[3] - box_b[1])
+
+    union_area = area_a + area_b - inter_area
+    if union_area <= 0.0:
+        return 0.0
+
+    return inter_area / union_area
+
+def should_register_detection(detection):
+    """Determine if a detection should be counted or skipped as a duplicate.
+
+    Returns a tuple (is_new_detection, is_duplicate_event) where:
+        * is_new_detection -> True when the detection should be counted.
+        * is_duplicate_event -> True when the detection was skipped and should be
+          recorded as a filtered duplicate (throttled to avoid rapid increments).
+    """
+    global recent_detections
+
+    current_time = time.time()
+    box = detection['box']
+    center_x = (box[0] + box[2]) / 2.0
+    center_y = (box[1] + box[3]) / 2.0
+    seed_type = detection['seed_type']
+
+    # Remove stale detections outside the memory window
+    recent_detections[:] = [entry for entry in recent_detections
+                            if current_time - entry['timestamp'] <= DETECTION_MEMORY_SECONDS]
+
+    for entry in recent_detections:
+        if entry['seed_type'] != seed_type:
+            continue
+
+        dx = center_x - entry['center'][0]
+        dy = center_y - entry['center'][1]
+        distance = (dx * dx + dy * dy) ** 0.5
+        iou = calculate_iou(box, entry['box'])
+
+        if distance <= DETECTION_DISTANCE_THRESHOLD or iou >= DETECTION_IOU_THRESHOLD:
+            # Update existing entry to keep it fresh and more accurate
+            entry['center'] = (center_x, center_y)
+            entry['box'] = box
+            entry['timestamp'] = current_time
+            entry['confidence'] = max(entry['confidence'], detection['score'])
+            last_inc = entry.get('last_duplicate_increment', 0.0)
+            duplicate_event = current_time - last_inc >= 0.25
+            if duplicate_event:
+                entry['last_duplicate_increment'] = current_time
+            return False, duplicate_event
+
+    # If we reach here, it's a new detection worth counting
+    recent_detections.append({
+        'center': (center_x, center_y),
+        'box': box,
+        'seed_type': seed_type,
+        'timestamp': current_time,
+        'confidence': detection['score'],
+        'last_duplicate_increment': current_time
+    })
+
+    # Keep the list from growing unbounded
+    if len(recent_detections) > 50:
+        del recent_detections[0]
+
+    return True, False
+
 def draw_predictions(frame, boxes, scores, classes):
     """Enhanced prediction drawing with better confidence handling and visual feedback"""
     # Collect all detections for smart processing
     detections = []
     best_detection = None
     best_confidence = 0.0
+    duplicate_filtered = False
+    duplicate_message = None
     
     for box, score, cls in zip(boxes, scores, classes):
         class_name = CLASS_NAMES[int(cls)] if int(cls) < len(CLASS_NAMES) else f"Class_{int(cls)}"
@@ -506,7 +665,7 @@ def draw_predictions(frame, boxes, scores, classes):
             'color': color
         }
         detections.append(detection)
-          # Track the highest confidence detection for action priority
+        # Track the highest confidence detection for action priority
         if score > best_confidence and seed_type in ['good', 'bad']:
             best_confidence = score
             best_detection = detection
@@ -568,14 +727,24 @@ def draw_predictions(frame, boxes, scores, classes):
                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
       # Process only the best detection for statistics and servo control
     if best_detection and best_detection['seed_type'] in ['good', 'bad']:
-        update_statistics(best_detection['seed_type'])
+        is_new, duplicate_event = should_register_detection(best_detection)
+
+        if is_new:
+            update_statistics(best_detection['seed_type'])
+            highlight_color = (255, 255, 0)  # Yellow border for counted detections
+        else:
+            duplicate_filtered = True
+            highlight_color = (0, 165, 255)  # Orange border for suppressed duplicates
+            if duplicate_event:
+                seed_statistics['duplicates_filtered'] += 1
+            duplicate_message = "Duplicate detection suppressed"
         
         # Add visual indicator for the selected action
         best_box = best_detection['box']
         x1, y1, x2, y2 = map(int, best_box)
         
         # Draw a special border around the selected detection
-        cv2.rectangle(frame, (x1-3, y1-3), (x2+3, y2+3), (255, 255, 0), 3)  # Yellow border
+        cv2.rectangle(frame, (x1-3, y1-3), (x2+3, y2+3), highlight_color, 3)
       
     # Add enhanced statistics overlay
     stats_text = [
@@ -583,7 +752,8 @@ def draw_predictions(frame, boxes, scores, classes):
         f"Classes: {', '.join(CLASS_NAMES)}",
         f"Good Seeds: {seed_statistics['good_seeds']}",
         f"Bad Seeds: {seed_statistics['bad_seeds']}",
-        f"Total: {seed_statistics['total_analyzed']}"
+        f"Total: {seed_statistics['total_analyzed']}",
+        f"Duplicates Filtered: {seed_statistics['duplicates_filtered']}"
     ]
     
     # Draw stats background for better visibility
@@ -594,6 +764,10 @@ def draw_predictions(frame, boxes, scores, classes):
     y = 22
     for text in stats_text:
         cv2.putText(frame, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        y += 22
+
+    if duplicate_filtered and duplicate_message:
+        cv2.putText(frame, duplicate_message, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 215, 255), 2)
         y += 22
     
     return frame
@@ -613,9 +787,18 @@ def update_statistics(seed_type):
         
         servo_status['sorting_active'] = True
         if seed_type == 'good':
-            send_servo_command('RIGHT')  # Good seeds go RIGHT (180°)
+            # Good seeds: Let them fall naturally (no servo action needed)
+            success = send_servo_command('GOOD')
+            if success:
+                print(f"🌱 Good seed detected - Falls naturally to good side")
+            else:
+                print(f"🌱 Good seed detected - Servo command failed, but seed falls naturally")
         elif seed_type == 'bad':
-            send_servo_command('LEFT')   # Bad seeds go LEFT (0°)
+            success = send_servo_command('BAD')   # Bad seeds get thrown to bad side
+            if success:
+                print(f"🚫 Bad seed detected - Servo throws seed to bad side")
+            else:
+                print(f"🚫 Bad seed detected - Servo command failed")
         
         # Reset sorting active flag after a delay
         def reset_sorting_flag():
@@ -636,7 +819,7 @@ def get_fps():
     return seed_statistics['total_analyzed'] / elapsed_time
 
 def generate_frames():
-    """Generate video frames with optimized CUDA processing"""
+    """Generate video frames with optimized CUDA processing and accurate FPS measurement"""
     global cap, model
     
     if cap is None or not cap.isOpened():
@@ -649,29 +832,35 @@ def generate_frames():
         model = initialize_model()
     
     frame_count = 0
-    inference_times = []
-    performance_stats = {'frame_count': 0, 'total_inference_time': 0.0, 'avg_fps': 0.0}
+    frame_times = []  # Track complete frame processing time
+    inference_times = []  # Track only inference time
+    last_fps_update = time.time()
+    fps_display = 0.0
     
     while True:
+        # Start timing complete frame cycle
+        frame_start_time = time.time()
+        
         success, frame = cap.read()
         if not success:
             break
         
         frame_count += 1
-        start_time = time.time()
-          # Run YOLO inference with CUDA optimization
+        
+        # Run YOLO inference with CUDA optimization
+        inference_start = time.time()
         with torch.no_grad():
             try:
                 # Run inference directly on the frame
                 results = model(frame, conf=CONFIDENCE_THRESHOLD, iou=IOU_THRESHOLD, verbose=False)
                 
-                # Extract detection data from YOLOv11 results (similar to app.py)
+                # Extract detection data from YOLOv11 results
                 if results and len(results) > 0 and hasattr(results[0], "boxes") and results[0].boxes is not None:
                     boxes_tensor = results[0].boxes.xyxy
                     scores_tensor = results[0].boxes.conf
                     classes_tensor = results[0].boxes.cls
                     
-                    # Convert to numpy arrays safely
+                    # Convert to numpy arrays efficiently
                     if hasattr(boxes_tensor, 'cpu'):
                         boxes = boxes_tensor.cpu().numpy()
                         scores = scores_tensor.cpu().numpy()
@@ -681,7 +870,7 @@ def generate_frames():
                         scores = np.array(scores_tensor)
                         classes = np.array(classes_tensor)
                     
-                    # Filter by confidence threshold (additional filtering)
+                    # Filter by confidence threshold
                     confidence_mask = scores >= CONFIDENCE_THRESHOLD
                     boxes = boxes[confidence_mask]
                     scores = scores[confidence_mask]
@@ -693,31 +882,57 @@ def generate_frames():
                 else:
                     num_objects = 0
                 
-                # Sync with GPU every few frames
-                if device == 'cuda' and frame_count % 10 == 0:
-                    torch.cuda.synchronize()
-                
             except Exception as e:
                 print(f"⚠️ Inference error: {e}")
                 continue
         
-        # Track performance
-        inference_time = time.time() - start_time
+        inference_time = time.time() - inference_start
         inference_times.append(inference_time)
         
-        # Add FPS overlay
+        # Keep only recent inference times for averaging
         if len(inference_times) > 30:
             inference_times.pop(0)
-        avg_fps = 1.0 / (sum(inference_times) / len(inference_times))
-        cv2.putText(frame, f"FPS: {avg_fps:.1f}", (10, 30), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
         
-        # GPU memory management
-        if device == 'cuda' and frame_count % 20 == 0:
+        # Calculate and display FPS (update every second for stability)
+        current_time = time.time()
+        if current_time - last_fps_update >= 1.0:
+            if len(frame_times) > 0:
+                avg_frame_time = sum(frame_times) / len(frame_times)
+                fps_display = 1.0 / avg_frame_time if avg_frame_time > 0 else 0
+            last_fps_update = current_time
+            
+        # Add performance info to frame
+        inference_fps = 1.0 / (sum(inference_times) / len(inference_times)) if inference_times else 0
+        cv2.putText(frame, f"FPS: {fps_display:.1f}", (10, 30), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+        cv2.putText(frame, f"Inference: {inference_fps:.1f} FPS", (10, 70), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+        cv2.putText(frame, f"Objects: {num_objects}", (10, 110), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+        
+        # Optimized GPU memory management (less frequent)
+        if device == 'cuda' and frame_count % 50 == 0:
             torch.cuda.empty_cache()
             
-        # Encode frame as JPEG
-        ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        # Complete frame processing time
+        total_frame_time = time.time() - frame_start_time
+        frame_times.append(total_frame_time)
+        
+        # Keep only recent frame times for averaging
+        if len(frame_times) > 30:
+            frame_times.pop(0)
+            
+        # Frame rate limiting for smooth streaming
+        target_frame_time = 1.0 / TARGET_FPS
+        if total_frame_time < target_frame_time:
+            time.sleep(target_frame_time - total_frame_time)
+            
+        # Optimized JPEG encoding for better streaming performance
+        encode_params = [
+            cv2.IMWRITE_JPEG_QUALITY, 75,  # Reduced quality for speed
+            cv2.IMWRITE_JPEG_OPTIMIZE, 1   # Enable optimization
+        ]
+        ret, buffer = cv2.imencode('.jpg', frame, encode_params)
         if not ret:
             continue
         
@@ -822,11 +1037,19 @@ def servo_control(command):
     """Manual servo control endpoint"""
     command = command.upper()
     
-    # Map manual commands to servo positions
+    # Map manual commands to servo positions based on new logic
     if command == 'GOOD':
-        servo_command = 'RIGHT'  # Good seeds go right
+        # Good seeds: Fall naturally to good side
+        success = send_servo_command('GOOD')
+        return jsonify({
+            'success': success,
+            'command': command,
+            'servo_command': 'GOOD',
+            'message': 'Good seed: Falls naturally to good side',
+            'servo_status': servo_status
+        })
     elif command == 'BAD':
-        servo_command = 'LEFT'   # Bad seeds go left
+        servo_command = 'BAD'   # Bad seeds get thrown to bad side
     elif command in ['CENTER', 'TEST']:
         servo_command = command
     else:
@@ -843,9 +1066,51 @@ def servo_control(command):
 @app.route('/reconnect_servo')
 def reconnect_servo():
     """Attempt to reconnect servo"""
+    global servo_serial
+    
+    # Close existing connection
+    if servo_serial:
+        try:
+            servo_serial.close()
+        except:
+            pass
+        servo_serial = None
+    
+    servo_status['connected'] = False
     success = initialize_servo()
+    
     return jsonify({
         'success': success,
+        'servo_status': servo_status,
+        'message': 'Reconnection attempted' if success else 'Reconnection failed'
+    })
+
+@app.route('/test_servo')
+def test_servo():
+    """Test servo with a sequence of movements"""
+    if not servo_status['connected']:
+        return jsonify({
+            'success': False,
+            'error': 'Servo not connected',
+            'servo_status': servo_status
+        })
+    
+    test_results = []
+    commands = ['CENTER', 'LEFT', 'CENTER', 'RIGHT', 'CENTER']
+    
+    for i, cmd in enumerate(commands):
+        print(f"🔧 Test step {i+1}: {cmd}")
+        success = send_servo_command(cmd)
+        test_results.append({
+            'step': i+1,
+            'command': cmd,
+            'success': success
+        })
+        time.sleep(1.5)  # Wait between commands
+    
+    return jsonify({
+        'success': True,
+        'test_results': test_results,
         'servo_status': servo_status
     })
 
@@ -861,7 +1126,9 @@ def reset_stats():
     seed_statistics['bad_seeds'] = 0
     seed_statistics['total_analyzed'] = 0
     seed_statistics['start_time'] = time.time()
+    seed_statistics['duplicates_filtered'] = 0
     servo_status['total_sorts'] = 0
+    recent_detections.clear()
     
     # Reset performance stats
     performance_stats['frame_count'] = 0
